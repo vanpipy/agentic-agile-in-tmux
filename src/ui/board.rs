@@ -29,6 +29,7 @@ impl BoardWidget {
         self.selected_column
     }
 
+    #[allow(dead_code)]
     pub fn set_selected_column(&mut self, col: usize) {
         self.selected_column = col.min(self.config.columns.len().saturating_sub(1));
         self.selected_task = None;
@@ -39,6 +40,7 @@ impl BoardWidget {
         self.selected_task
     }
 
+    #[allow(dead_code)]
     pub fn set_selected_task(&mut self, task: Option<usize>) {
         self.selected_task = task;
     }

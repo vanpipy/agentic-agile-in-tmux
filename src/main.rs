@@ -1,8 +1,8 @@
 use clap::Parser;
 use ratatui::crossterm::event::{Event, KeyCode, KeyEventKind};
-use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::prelude::*;
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Terminal;
 use rusqlite::Connection;
 use std::path::PathBuf;
@@ -37,6 +37,7 @@ enum Command {
         branch: String,
         column: String,
     },
+    #[allow(dead_code)]
     MoveTask {
         id: String,
         to_column: String,
@@ -47,6 +48,7 @@ enum Command {
     AttachTmux {
         id: String,
     },
+    #[allow(dead_code)]
     EditTask {
         id: String,
         field: String,
@@ -56,6 +58,7 @@ enum Command {
     MoveSelectionUp,
     MoveSelectionLeft,
     MoveSelectionRight,
+    #[allow(dead_code)]
     SelectTask,
     StartTask,
     BlockTask,
@@ -88,6 +91,7 @@ impl AppState {
         }
     }
 
+    #[allow(dead_code)]
     fn tasks_in_column(&self, column: &str) -> Vec<&Task> {
         self.tasks.iter().filter(|t| t.column == column).collect()
     }
@@ -124,7 +128,7 @@ impl AppState {
             Command::DeleteTask { id } => {
                 db::delete_task(conn, &id).map_err(|e| e.to_string())?;
                 self.tasks.retain(|t| t.id != id);
-                self.status_bar.set_message(format!("Deleted task"));
+                self.status_bar.set_message("Deleted task".to_string());
                 info!(id = %id, "Task deleted");
                 Ok(())
             }

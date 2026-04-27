@@ -24,7 +24,7 @@ impl CreateDialog {
     }
 
     pub fn render(&self, f: &mut Frame<'_>, area: Rect, columns: &[String]) {
-        let dialog_area = Self::centered_rect(area, 40, 12);
+        let dialog_area = Self::centered_rect(area, 40, 10);
         f.render_widget(Clear, area);
         f.render_widget(
             Block::default()
@@ -142,10 +142,8 @@ impl CreateDialog {
                     if self.title.len() < 100 {
                         self.title.push(c);
                     }
-                } else if self.focus_index == 1 {
-                    if self.branch.len() < 50 {
-                        self.branch.push(c);
-                    }
+                } else if self.focus_index == 1 && self.branch.len() < 50 {
+                    self.branch.push(c);
                 }
                 None
             }
@@ -162,12 +160,14 @@ impl CreateDialog {
     }
 }
 
+#[allow(dead_code)]
 pub struct EditDialog {
     pub field_index: usize,
     pub value: String,
     pub focus_index: usize,
 }
 
+#[allow(dead_code)]
 impl EditDialog {
     pub fn new() -> Self {
         EditDialog {

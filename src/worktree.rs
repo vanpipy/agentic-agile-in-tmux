@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use tracing::{debug, error, info};
 
+#[allow(dead_code)]
 pub fn create_worktree(
     repo_path: &Path,
     task: &Task,
@@ -46,6 +47,7 @@ pub fn create_worktree(
     Ok(worktree_path)
 }
 
+#[allow(dead_code)]
 pub fn worktree_path(repo_path: &Path, task: &Task) -> PathBuf {
     let worktrees_dir = repo_path.join(".worktrees").join(&task.branch);
     debug!(
@@ -57,6 +59,7 @@ pub fn worktree_path(repo_path: &Path, task: &Task) -> PathBuf {
     worktrees_dir
 }
 
+#[allow(dead_code)]
 pub fn worktree_exists(repo_path: &Path, task: &Task) -> bool {
     let worktree_path = worktree_path(repo_path, task);
 
@@ -101,6 +104,7 @@ mod tests {
     use super::*;
     use crate::task::{Status, Task};
     use chrono::Utc;
+    #[allow(unused_imports)]
     use std::fs;
     use tempfile::TempDir;
 

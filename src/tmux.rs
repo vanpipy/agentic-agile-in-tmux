@@ -40,6 +40,7 @@ fn session_name(project: &str, task: &Task) -> String {
     format!("ait-{}-{}", project, task.branch)
 }
 
+#[allow(dead_code)]
 fn run_tmux_command(args: &[&str]) -> Result<String, TmuxError> {
     let output = Command::new("tmux")
         .args(args)
@@ -58,7 +59,7 @@ pub fn create_session(project: &str, task: &Task) -> Result<(), Box<dyn std::err
     check_tmux_installed()?;
 
     let name = session_name(project, task);
-    let worktree_path = format!("/home/leroy/Project/agentic-agile-in-tmux/.worktrees/impl");
+    let worktree_path = "/home/leroy/Project/agentic-agile-in-tmux/.worktrees/impl".to_string();
 
     if session_exists(&name) {
         warn!("Session {} already exists", name);
@@ -104,6 +105,7 @@ pub fn attach_session(session_name: &str) -> Result<(), Box<dyn std::error::Erro
     Ok(())
 }
 
+#[allow(dead_code)]
 pub fn destroy_session(session_name: &str) -> Result<(), Box<dyn std::error::Error>> {
     check_tmux_installed()?;
 
@@ -141,6 +143,7 @@ pub fn session_exists(session_name: &str) -> bool {
     }
 }
 
+#[allow(dead_code)]
 pub fn worktree_path(_project: &str, task: &Task) -> String {
     format!(
         "/home/leroy/Project/agentic-agile-in-tmux/.worktrees/{}",
