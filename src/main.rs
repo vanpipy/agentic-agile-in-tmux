@@ -13,10 +13,12 @@ mod config;
 mod db;
 mod task;
 mod tmux;
+mod ui;
 mod worktree;
 
 use config::{load_config, BoardConfig};
 use task::{Status, Task};
+use ui::{BoardWidget, CreateDialog, StatusBar};
 
 #[derive(Parser, Debug)]
 #[command(name = "agentic-agile-tui")]
@@ -33,6 +35,7 @@ enum Command {
     CreateTask {
         title: String,
         branch: String,
+        column: String,
     },
     MoveTask {
         id: String,
@@ -51,6 +54,8 @@ enum Command {
     },
     MoveSelectionDown,
     MoveSelectionUp,
+    MoveSelectionLeft,
+    MoveSelectionRight,
     SelectTask,
     StartTask,
     BlockTask,
@@ -62,24 +67,22 @@ enum Command {
 
 struct AppState {
     tasks: Vec<Task>,
-    selected_task: Option<usize>,
-    selected_column: usize,
+    board: BoardWidget,
     show_create_dialog: bool,
-    create_title: String,
-    create_branch: String,
+    create_dialog: CreateDialog,
+    status_bar: StatusBar,
     config: BoardConfig,
     error_message: Option<String>,
 }
 
 impl AppState {
-    fn new(config: BoardConfig) -> Self {
+    fn new(config: BoardConfig, project_name: String) -> Self {
         AppState {
             tasks: Vec::new(),
-            selected_task: None,
-            selected_column: 0,
+            board: BoardWidget::new(config.clone()),
             show_create_dialog: false,
-            create_title: String::new(),
-            create_branch: String::new(),
+            create_dialog: CreateDialog::new(),
+            status_bar: StatusBar::new(project_name),
             config,
             error_message: None,
         }
@@ -90,9 +93,10 @@ impl AppState {
     }
 
     fn get_selected_task_id(&self) -> Option<String> {
-        let col_name = self.config.columns.get(self.selected_column)?.name.clone();
-        let col_tasks: Vec<&Task> = self.tasks.iter().filter(|t| t.column == col_name).collect();
-        let idx = self.selected_task?;
+        let col_tasks = self
+            .board
+            .tasks_in_column(&self.tasks, self.board.selected_column());
+        let idx = self.board.selected_task()?;
         col_tasks.get(idx).map(|t| t.id.clone())
     }
 
@@ -103,23 +107,24 @@ impl AppState {
         project: &str,
     ) -> Result<(), String> {
         match cmd {
-            Command::CreateTask { title, branch } => {
-                let default_column = self
-                    .config
-                    .columns
-                    .first()
-                    .map(|c| c.name.clone())
-                    .unwrap_or_default();
-                let new_task = Task::new(&title, &branch, &default_column);
+            Command::CreateTask {
+                title,
+                branch,
+                column,
+            } => {
+                let new_task = Task::new(&title, &branch, &column);
                 task::validate_task(&new_task).map_err(|e| e.to_string())?;
                 db::create_task(conn, &new_task).map_err(|e| e.to_string())?;
                 self.tasks.push(new_task);
-                info!(title = %title, branch = %branch, "Task created");
+                let msg = format!("Created task: {}", title);
+                self.status_bar.set_message(msg);
+                info!(title = %title, branch = %branch, column = %column, "Task created");
                 Ok(())
             }
             Command::DeleteTask { id } => {
                 db::delete_task(conn, &id).map_err(|e| e.to_string())?;
                 self.tasks.retain(|t| t.id != id);
+                self.status_bar.set_message(format!("Deleted task"));
                 info!(id = %id, "Task deleted");
                 Ok(())
             }
@@ -128,6 +133,8 @@ impl AppState {
                     task.column = to_column.clone();
                     task.updated_at = chrono::Utc::now();
                     db::update_task(conn, task).map_err(|e| e.to_string())?;
+                    self.status_bar
+                        .set_message(format!("Moved task to {}", to_column));
                     info!(id = %id, column = %to_column, "Task moved");
                 }
                 Ok(())
@@ -137,6 +144,8 @@ impl AppState {
                     let session_name = format!("ait-{}-{}", project, task.branch);
                     tmux::create_session(project, task).map_err(|e| e.to_string())?;
                     tmux::attach_session(&session_name).map_err(|e| e.to_string())?;
+                    self.status_bar
+                        .set_message(format!("Attached to {}", session_name));
                     info!(id = %id, session = %session_name, "Attached to tmux session");
                 }
                 Ok(())
@@ -153,34 +162,26 @@ impl AppState {
                     }
                     task.updated_at = chrono::Utc::now();
                     db::update_task(conn, task).map_err(|e| e.to_string())?;
+                    self.status_bar
+                        .set_message(format!("Edited {} field", field));
                     info!(id = %id, field = %field, "Task edited");
                 }
                 Ok(())
             }
             Command::MoveSelectionDown => {
-                let column_name = self
-                    .config
-                    .columns
-                    .get(self.selected_column)
-                    .map(|c| c.name.clone());
-                if let Some(col) = column_name {
-                    let col_tasks = self.tasks_in_column(&col);
-                    if let Some(sel) = self.selected_task {
-                        if sel < col_tasks.len() - 1 {
-                            self.selected_task = Some(sel + 1);
-                        }
-                    } else if !col_tasks.is_empty() {
-                        self.selected_task = Some(0);
-                    }
-                }
+                self.board.move_down(&self.tasks);
                 Ok(())
             }
             Command::MoveSelectionUp => {
-                if let Some(sel) = self.selected_task {
-                    if sel > 0 {
-                        self.selected_task = Some(sel - 1);
-                    }
-                }
+                self.board.move_up();
+                Ok(())
+            }
+            Command::MoveSelectionLeft => {
+                self.board.move_left();
+                Ok(())
+            }
+            Command::MoveSelectionRight => {
+                self.board.move_right();
                 Ok(())
             }
             Command::SelectTask => Ok(()),
@@ -190,6 +191,7 @@ impl AppState {
                         task.status = Status::InProgress;
                         task.updated_at = chrono::Utc::now();
                         db::update_task(conn, task).map_err(|e| e.to_string())?;
+                        self.status_bar.set_message("Task started".to_string());
                         info!(id = %task_id, "Task started");
                     }
                 }
@@ -201,6 +203,7 @@ impl AppState {
                         task.status = Status::Blocked;
                         task.updated_at = chrono::Utc::now();
                         db::update_task(conn, task).map_err(|e| e.to_string())?;
+                        self.status_bar.set_message("Task blocked".to_string());
                         info!(id = %task_id, "Task blocked");
                     }
                 }
@@ -212,6 +215,7 @@ impl AppState {
                         task.status = Status::Done;
                         task.updated_at = chrono::Utc::now();
                         db::update_task(conn, task).map_err(|e| e.to_string())?;
+                        self.status_bar.set_message("Task completed".to_string());
                         info!(id = %task_id, "Task completed");
                     }
                 }
@@ -220,31 +224,35 @@ impl AppState {
             Command::ToggleCreateDialog => {
                 self.show_create_dialog = !self.show_create_dialog;
                 if !self.show_create_dialog {
-                    self.create_title.clear();
-                    self.create_branch.clear();
+                    self.create_dialog = CreateDialog::new();
                 }
                 Ok(())
             }
             Command::ConfirmCreate => {
-                if !self.create_title.is_empty() && !self.create_branch.is_empty() {
+                if !self.create_dialog.title.is_empty() && !self.create_dialog.branch.is_empty() {
+                    let column = self
+                        .board
+                        .column_names()
+                        .get(self.create_dialog.column_index)
+                        .cloned()
+                        .unwrap_or_else(|| "To Do".to_string());
                     return self.execute_command(
                         Command::CreateTask {
-                            title: self.create_title.clone(),
-                            branch: self.create_branch.clone(),
+                            title: self.create_dialog.title.clone(),
+                            branch: self.create_dialog.branch.clone(),
+                            column,
                         },
                         conn,
                         project,
                     );
                 }
                 self.show_create_dialog = false;
-                self.create_title.clear();
-                self.create_branch.clear();
+                self.create_dialog = CreateDialog::new();
                 Ok(())
             }
             Command::CancelCreate => {
                 self.show_create_dialog = false;
-                self.create_title.clear();
-                self.create_branch.clear();
+                self.create_dialog = CreateDialog::new();
                 Ok(())
             }
         }
@@ -282,23 +290,22 @@ fn setup_logging(project: &str) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn centered_rect(area: Rect, width: u16, height: u16) -> Rect {
-    Rect {
-        x: area.x + (area.width.saturating_sub(width)) / 2,
-        y: area.y + (area.height.saturating_sub(height)) / 2,
-        width,
-        height,
-    }
-}
-
 fn render_ui(f: &mut Frame<'_>, state: &AppState) {
     let areas = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Min(0)].as_ref())
+        .constraints(
+            [
+                Constraint::Length(3),
+                Constraint::Min(0),
+                Constraint::Length(3),
+            ]
+            .as_ref(),
+        )
         .split(f.area());
 
     let header_area = areas[0];
     let body_area = areas[1];
+    let status_area = areas[2];
 
     let title = Text::raw(format!(
         " Agentic Agile TUI - Project: {} ",
@@ -315,87 +322,14 @@ fn render_ui(f: &mut Frame<'_>, state: &AppState) {
     f.render_widget(title_widget, header_area);
 
     if state.show_create_dialog {
-        let dialog_area = centered_rect(body_area, 40, 10);
-        let dialog_block = Block::default()
-            .title("Create Task")
-            .borders(Borders::ALL)
-            .style(Style::default().bg(Color::DarkGray));
-
-        f.render_widget(Clear, body_area);
-        f.render_widget(dialog_block, dialog_area);
-
-        let content = Text::raw(format!(
-            "Title: {}\nBranch: {}",
-            state.create_title, state.create_branch
-        ));
-        f.render_widget(
-            Paragraph::new(content),
-            dialog_area.inner(Margin {
-                horizontal: 1,
-                vertical: 1,
-            }),
-        );
+        state
+            .create_dialog
+            .render(f, body_area, &state.board.column_names());
     } else {
-        let column_areas = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints(
-                state
-                    .config
-                    .columns
-                    .iter()
-                    .map(|_| Constraint::Percentage(100 / state.config.columns.len() as u16))
-                    .collect::<Vec<_>>(),
-            )
-            .split(body_area);
-
-        for (i, column) in state.config.columns.iter().enumerate() {
-            let column_area = column_areas[i];
-            let col_name = &column.name;
-            let col_tasks: Vec<&Task> = state
-                .tasks
-                .iter()
-                .filter(|t| t.column == *col_name)
-                .collect();
-
-            let column_block = Block::default()
-                .title(format!(" {} ({}) ", column.name, col_tasks.len()))
-                .borders(Borders::ALL)
-                .style(if i == state.selected_column {
-                    Style::default().bg(Color::Blue).fg(Color::White)
-                } else {
-                    Style::default()
-                });
-
-            f.render_widget(column_block, column_area);
-
-            let task_list = col_tasks
-                .iter()
-                .enumerate()
-                .map(|(idx, task)| {
-                    let is_selected =
-                        state.selected_column == i && state.selected_task == Some(idx);
-                    let prefix = if is_selected { ">> " } else { "   " };
-                    let status_str = match task.status {
-                        Status::Open => "[ ]",
-                        Status::InProgress => "[#]",
-                        Status::Blocked => "[!]",
-                        Status::Done => "[x]",
-                    };
-                    format!("{}{} {}", prefix, status_str, task.title)
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
-
-            let task_widget = Paragraph::new(Text::raw(task_list));
-            f.render_widget(
-                task_widget,
-                column_area.inner(Margin {
-                    horizontal: 1,
-                    vertical: 1,
-                }),
-            );
-        }
+        state.board.render(f, body_area, &state.tasks);
     }
+
+    state.status_bar.render(f, status_area);
 
     if let Some(ref err) = state.error_message {
         let error_area = Rect {
@@ -417,7 +351,7 @@ fn run_event_loop(
     project: String,
     config: BoardConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut state = AppState::new(config);
+    let mut state = AppState::new(config, project.clone());
     state.tasks = db::get_tasks(&conn).unwrap_or_default();
 
     loop {
@@ -439,11 +373,37 @@ fn run_event_loop(
                 continue;
             }
 
+            if state.show_create_dialog {
+                if let Some(cmd) = state.create_dialog.handle_key(key) {
+                    match cmd {
+                        ui::DialogCommand::Confirm => {
+                            if let Err(e) =
+                                state.execute_command(Command::ConfirmCreate, &conn, &project)
+                            {
+                                state.error_message = Some(e);
+                            } else {
+                                state.error_message = None;
+                                state.show_create_dialog = false;
+                            }
+                        }
+                        ui::DialogCommand::Cancel => {
+                            state
+                                .execute_command(Command::CancelCreate, &conn, &project)
+                                .ok();
+                            state.show_create_dialog = false;
+                        }
+                    }
+                }
+                continue;
+            }
+
             let cmd = match key.code {
                 KeyCode::Char('q') => break,
                 KeyCode::Char('n') => Some(Command::ToggleCreateDialog),
                 KeyCode::Char('j') => Some(Command::MoveSelectionDown),
                 KeyCode::Char('k') => Some(Command::MoveSelectionUp),
+                KeyCode::Char('h') => Some(Command::MoveSelectionLeft),
+                KeyCode::Char('l') => Some(Command::MoveSelectionRight),
                 KeyCode::Char('d') => Some(Command::DeleteTask {
                     id: state.get_selected_task_id().unwrap_or_default(),
                 }),
@@ -455,20 +415,8 @@ fn run_event_loop(
                 KeyCode::Char('c') => Some(Command::CompleteTask),
                 KeyCode::Enter => Some(Command::ConfirmCreate),
                 KeyCode::Esc => Some(Command::CancelCreate),
-                KeyCode::Left => {
-                    if state.selected_column > 0 {
-                        state.selected_column -= 1;
-                        state.selected_task = None;
-                    }
-                    None
-                }
-                KeyCode::Right => {
-                    if state.selected_column < state.config.columns.len() - 1 {
-                        state.selected_column += 1;
-                        state.selected_task = None;
-                    }
-                    None
-                }
+                KeyCode::Left => Some(Command::MoveSelectionLeft),
+                KeyCode::Right => Some(Command::MoveSelectionRight),
                 _ => None,
             };
 
