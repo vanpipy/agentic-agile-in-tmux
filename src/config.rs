@@ -2,11 +2,33 @@ use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(untagged)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 pub enum ColumnLimit {
     Unlimited,
     Limited(u8),
+}
+
+impl<'de> Deserialize<'de> for ColumnLimit {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = serde_yaml::Value::deserialize(deserializer)?;
+        match value {
+            serde_yaml::Value::Number(n) => {
+                let n = n.as_u64().ok_or_else(|| {
+                    serde::de::Error::custom("Expected positive integer for limit")
+                })?;
+                Ok(ColumnLimit::Limited(n as u8))
+            }
+            serde_yaml::Value::String(s) if s.eq_ignore_ascii_case("unlimited") => {
+                Ok(ColumnLimit::Unlimited)
+            }
+            _ => Err(serde::de::Error::custom(
+                "Expected number or 'unlimited' for limit",
+            )),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -107,6 +129,7 @@ worktree:
         assert_eq!(config.columns.len(), 3);
         assert_eq!(config.columns[0].name, "Backlog");
         assert_eq!(config.columns[0].limit, ColumnLimit::Limited(10));
+        assert_eq!(config.columns[1].limit, ColumnLimit::Limited(2));
         assert_eq!(config.columns[2].limit, ColumnLimit::Unlimited);
         assert_eq!(config.worktree.branch_prefix, "feature/");
     }
