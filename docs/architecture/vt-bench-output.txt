@@ -1,0 +1,94 @@
+
+============================================================
+  Test 1: Basic write + render
+============================================================
+vt10x.String() = "hello               \n     world          \n          foo       \n" (pads each row)
+x/vt.Render()    = "hello\n     world\n          foo" (preserves ANSI)
+
+============================================================
+  Test 2: Cell-level access
+============================================================
+vt10x.Cell(0,0): Char='A' Mode=0 FG=16777216 BG=16777217 (VALUE type)
+  ⚠️  vt10x.Cell(100, 0) PANICS — index out of range [verified]
+x/vt.CellAt(0,0): Content="A", pointer-eq-twice=true
+x/vt.CellAt(100,0): nil=true (OOB safe)
+  ✅ x/vt returns nil on OOB — safer
+
+============================================================
+  Test 3: Scroll detection (awp pattern)
+============================================================
+vt10x row 0 = "          line3"
+x/vt  row 0 = "          line3", Scrollback.Len = 2
+
+============================================================
+  Test 4: Alt-screen detection
+============================================================
+vt10x Mode = 9 (1001) — awp decodes bit positions
+  >>> AltScreen callback: active=true
+  >>> AltScreen callback: active=false
+x/vt: 2 clean callbacks (no byte scanning)
+
+============================================================
+  Test 5: Cell equality (snapshot + compare)
+============================================================
+vt10x Cell(0,0) == Cell(0,0): true (VALUE compare works)
+vt10x Cell(0,0) == Cell(1,0): false
+x/vt CellAt(0,0) == CellAt(0,0): true (POINTER compare)
+  ⚠️  x/vt: snapshot trick DOESN'T work — same ptr if no change
+      Need to compare .Content field directly
+
+============================================================
+  Test 6: Scrollback
+============================================================
+x/vt after 6 lines on 3-row: Scrollback.Len = 4
+  [0] "l1"
+  [1] "  l2"
+  [2] "    l3"
+  [3] "      l4"
+
+============================================================
+  Test 7: Per-newline split (awp's flow)
+============================================================
+vt10x:
+  row 0: "                  l1"
+  row 1: "0"
+  row 2: ""
+x/vt:
+  row 0: "                  l1"
+  row 1: "0"
+  row 2: ""
+  Scrollback.Len = 9
+
+============================================================
+  Test 8: ANSI rendering for Bubble Tea
+============================================================
+vt10x.String() = "red boldgreen       \n" (ANSI stripped — useless)
+  → This is why awp's renderLiveRow() manually walks Cell()
+x/vt.Render() = "\x1b[31mred\x1b[m \x1b[32;1mboldgreen\x1b[m" (preserved)
+  → x/vt.Render() could replace awp's 80+ lines of manual ANSI building
+
+------------------------------------------------------------
+  Test B: Mouse mode
+------------------------------------------------------------
+vt10x Mode = 4129 (1000000100001)
+x/vt modes: [enable:1000 enable:1006 disable:1000]
+
+------------------------------------------------------------
+  Test C: Scrollback boundary
+------------------------------------------------------------
+After 3 rows exactly: Scrollback.Len = 1
+After 4th: Scrollback.Len = 2, [0] = "row0"
+After BEL+clear+text: Scrollback.Len = 0
+
+------------------------------------------------------------
+  Test D: Manual scroll detection necessity
+------------------------------------------------------------
+awp's 50 lines: captureScrollbackBeforeWrite + AfterWrite + isLineVisible
+x/vt Scrollback.Len after 2 lines on 3 rows = 0
+  ✅ Manual detection can be deleted — built-in Scrollback
+
+------------------------------------------------------------
+  Test E: ANSI rendering
+------------------------------------------------------------
+x/vt Render() = "\x1b[31mhello\x1b[m"
+vt10x.String() = "hello               \n"

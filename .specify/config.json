@@ -1,0 +1,15 @@
+{
+  "version": "1.0",
+  "ai": "pi",
+  "language": {
+    "programming": "go",
+    "code_comments": "en",
+    "documentation": "en",
+    "paths": "en"
+  },
+  "tdd": {
+    "enabled": true,
+    "strict_mode": true,
+    "red_green_refactor": true
+  }
+}
