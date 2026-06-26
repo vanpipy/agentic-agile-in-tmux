@@ -1,8 +1,6 @@
 # awp — agentic-with-pi
 
-> 给人类开发者的快速指南。**awp** 是个 TUI 看板,
-> 让你同时跑多个 [pi](https://github.com/earendil-works/pi-coding-agent) 会话,
-> 每个工单一个 git worktree,从同一个界面观察和操控一切。
+> TUI kanban for running multiple [pi](https://github.com/earendil-works/pi-coding-agent) sessions in parallel — one git worktree per ticket, one unified view to watch and control everything.
 
 ```
 ┌──────────────────┬──────────────────────────────────────────┐
@@ -12,75 +10,66 @@
 └──────────────────┴──────────────────────────────────────────┘
 ```
 
-## 这是什么 / 不是什么
+## What This Is / Isn't
 
-| 这是 | 这不是 |
-|------|--------|
-| 一个 TUI 看板 | IDE / 编辑器 |
-| pi 的多任务编排器 | 多 agent 抽象层(只支持 pi) |
-| 实时显示 pi 的运行状态 | 离线任务系统 |
-| 基于 pi 的 `--mode rpc` 协议 | 基于屏幕正则的轮询 |
+| Is | Isn't |
+|----|-------|
+| A TUI kanban | An IDE or editor |
+| A multi-task orchestrator for pi | A multi-agent abstraction layer (pi only) |
+| A live view of pi's running state | An offline task system |
+| Built on pi's `--mode rpc` protocol | Built on screen-scrape polling |
 
-设计哲学:**深胜于广**。只把 pi 这一个 agent 做透,不做通用化。
+**Design philosophy**: depth over breadth. Pi gets the deep integration; we don't generalize to other agents.
 
-## 30 秒上手
-
-```bash
-# 1. 装(任选一种)
-go install github.com/pi/awp@latest         # 源码
-
-# 2. 检查环境
-awp doctor                                  # 7 项自检
-
-# 3. 注册一个项目(在 git 仓库目录里运行)
-cd ~/你的项目
-awp project new myproject
-
-# 4. 开 TUI
-awp
-# j/k 选工单 → s 启动 pi → Enter 看事件流 → P 选已有会话
-```
-
-需要 `pi` 在 `$PATH` 上。
-
-## 常用命令
+## 30-Second Onboarding
 
 ```bash
-awp                              # 启动 TUI
-
-awp project new [name]           # 注册当前目录为项目
-awp project list                 # 列出项目
-awp ticket list                  # 列出所有工单
-
-awp session list .               # 列出 pi 会话
-awp session show <id>            # 查看会话详情
-awp session export <id> -f html  # 导出会话(HTML/Markdown)
-
-awp interception status          # 查看拦截配置
-awp doctor [--fix]               # 自检
-awp theme list                   # 20 个主题
-awp theme set dracula
-awp version                      # 版本 + commit + 构建日期
-awp --debug ...                  # 详细日志
+go install github.com/pi/awp@latest     # install
+awp doctor                              # 7-point self-check
+cd ~/your-project && awp project new myproject
+awp                                     # launch TUI
+# j/k: select ticket • s: start pi • Enter: view events • P: pick session
 ```
 
-## TUI 键位
+Requires `pi` on `$PATH`.
 
-| 键 | 动作 | 键 | 动作 |
-|----|------|----|------|
-| `j/k` | 上下选 | `n` | 新建工单 |
-| `h/l` | 切列 | `s` | 启动 pi |
-| `Enter` | 看事件流 | `S` | 停止 pi |
-| `P` | 选历史会话 | `?` | 帮助 |
-| `q` | 退出 | | |
+## Commands
 
-拦截弹窗:`Y` 批准 / `N` 拒绝 / `A` 永久允许 / `Esc` 取消。
+```bash
+awp                              # launch TUI
 
-## 拦截(可选,默认关闭)
+awp project new [name]           # register current dir as project
+awp project list                 # list projects
+awp ticket list                  # list all tickets
 
-**警告**:开了之后,pi 的每一次工具调用都要你点头。
+awp session list .               # list pi sessions
+awp session show <id>            # session details
+awp session export <id> -f html  # export (HTML/Markdown)
 
-编辑 `~/.config/awp/interception.json`:
+awp interception status          # interception config
+awp doctor [--fix]               # self-check
+awp theme list / set dracula     # 20 themes
+awp version                      # version + commit + build date
+awp --debug ...                  # verbose logs
+```
+
+## TUI Keys
+
+| Key | Action | Key | Action |
+|-----|--------|-----|--------|
+| `j/k` | select up/down | `n` | new ticket |
+| `h/l` | switch column | `s` | start pi |
+| `Enter` | view event stream | `S` | stop pi |
+| `P` | pick existing session | `?` | help |
+| `q` | quit | | |
+
+Interception popup: `Y` approve / `N` deny / `A` always allow / `Esc` cancel.
+
+## Interception (optional, off by default)
+
+**Warning**: with this on, every pi tool call needs your approval.
+
+Edit `~/.config/awp/interception.json`:
 
 ```json
 {
@@ -90,102 +79,91 @@ awp --debug ...                  # 详细日志
 }
 ```
 
-简单 glob,不是正则。`allow_patterns` 先匹配(同时匹配两边算允许)。旧的 `blacklist`/`whitelist` 字段还能用(向后兼容)。
+Simple glob, not regex. `allow_patterns` is matched first (matches on both sides = allowed). Legacy `blacklist`/`whitelist` fields still work.
 
-## 架构(给想读代码的人)
+## Architecture
 
-- **Bubble Tea** 写 TUI(单一 Model + 8 模式状态机)
-- **creack/pty** 跑 pi 子进程(不用 tmux)
-- **pi `--mode rpc`** 收 JSONL 事件(不抓屏幕)
-- **cobra** 写 CLI
-- **Lip Gloss** 做样式(20 主题)
+- **Bubble Tea** for TUI (single Model + 8-mode state machine).
+- **creack/pty** for pi subprocess (no tmux).
+- **pi `--mode rpc`** for JSONL events (no screen scraping).
+- **cobra** for CLI; **Lip Gloss** for styling (20 themes).
 
 ```
-cmd/awp/                 # cobra CLI(7 类子命令)
+cmd/awp/                 # cobra CLI (7 sub-commands)
 internal/
-  pi/                    # RPC 客户端 + 30+ 命令 + 21 事件 + awp-extension.ts
-  agent/                 # PiPane + 状态机
-  ui/                    # TUI(8 modes, 9 个 per-concern 文件)
-  app/                   # RunPanes + 导出(XSS-safe)
-  config/                # 配置 + 主题 + 拦截
-  doctor/                # 7 项自检
-  git/                   # worktree 管理
-  project/               # 项目注册 + 工单存储
+  pi/                    # RPC client + 30+ commands + 21 events + extension
+  agent/                 # PiPane + state machine
+  ui/                    # TUI (8 modes)
+  app/                   # RunPanes + export (XSS-safe)
+  config/                # config + themes + interception
+  doctor/                # 7-point self-check
+  git/                   # worktree management
+  project/               # project registry + ticket store
   board/                 # Ticket + PiState
   terminal/              # PTY + vt10x
-  observability/         # 调试日志(log/slog)
-  buildinfo/             # ldflags 注入版本
-test/{sub}/              # 集成测试(//go:build integration),子目录与 internal/ 镜像
-e2e/                     # 端到端测试(//go:build e2e),平级,需真 awp + pi 二进制
+  observability/         # debug logging
+  buildinfo/             # ldflags version injection
+test/{sub}/              # integration tests (//go:build integration)
+e2e/                     # end-to-end (//go:build e2e, needs real binaries)
 ```
 
-设计细节看 `SYSTEM_DESIGN.md`(1551 行 spec)。
-逐项 spec 对照看 `CROSS_VALIDATION.md`。
+Full design: `SYSTEM_DESIGN.md`. Spec-vs-impl audit: `CROSS_VALIDATION.md`.
 
-## 怎么开发
+## Development
 
 ```bash
-# 构建
-make build                 # 本地调试版
-make release VERSION=0.2.0 # 带版本号的发布版
-# 相当于:
-go build -ldflags="-s -w \
-  -X github.com/pi/awp/internal/buildinfo.Version=0.2.0 \
-  -X github.com/pi/awp/internal/buildinfo.Commit=$(git rev-parse --short HEAD) \
-  -X github.com/pi/awp/internal/buildinfo.BuildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-  -o awp .
+make build                       # local debug build
+make release VERSION=0.2.0       # versioned release
 
-# 测试
-go test ./...                                    # 单元测试
-go test -race ./...                              # 竞态检测
-go test -tags integration ./test/...             # 集成测试(test/{sub}/,子目录镜像 internal/)
-go test -tags e2e ./e2e/...                      # 端到端测试(平级,需真二进制)
-go test -cover ./...                             # 覆盖率
-go vet ./...                                     # 静态检查
+go test ./...                    # unit tests
+go test -race ./...              # race detector
+go test -tags integration ./test/...
+go test -tags e2e ./e2e/...
+go test -cover ./...             # coverage
+go vet ./...                     # static checks
 
-# TypeScript 扩展(拦截)
+# TypeScript extension (interception)
 cd internal/pi/extension && bun test
 ```
 
-## 改代码前必读
+## Before Changing Code
 
-1. **`AGENTS.md`** — 140 行,设计原则 + 黄金法则(PTY / 只支持 pi / 协议优于字节流)
-2. **`SYSTEM_DESIGN.md`** — 完整设计
-3. 命名要表达意图,函数职责单一(不发明接口)
-4. `Update()` 永不阻塞,异步走 `tea.Cmd`
-5. 改设计先改文档,再写代码
-6. TDD:红 → 绿 → 重构,不跳步
+1. Read `AGENTS.md` — design principles + golden rules.
+2. Read `SYSTEM_DESIGN.md` — full design.
+3. Names express intent; single-responsibility functions.
+4. `Update()` never blocks — async via `tea.Cmd`.
+5. Update the design doc before the code.
+6. TDD: red → green → refactor, no skipping.
 
-## 质量现状
+## Quality
 
-| 指标 | 值 |
-|------|----|
-| 审计分 | **94/100**(0 critical, 0 major) |
-| 测试 | **335** 个(200 单元 + 19 集成 + 116 其他) |
-| 覆盖率 | **63.4%** 平均(8 个包 > 50%) |
-| 竞态检测 | clean |
-| `go vet` | 0 warning |
-| 二进制 | 14.9MB |
+| Metric | Value |
+|--------|-------|
+| Audit score | 94/100 (0 critical, 0 major) |
+| Tests | 357 |
+| Coverage | 68% avg (9 packages > 50%) |
+| Race detector | clean |
+| `go vet` | 0 warnings |
+| Binary | 16M |
 
-## 路线
+## Roadmap
 
-6 个阶段全部完成:基础 → pi 协议 → TUI → 会话 → 拦截 → 硬化。
+All 6 phases complete: foundation → pi protocol → TUI → sessions → interception → hardening.
 
-下一版(可选)待办:
+Next (optional):
+- 5 deferred UI modes (Settings / About / CommandPalette / ThemePicker / Worktree).
+- `auto_approve_after_seconds` (timeout auto-approve).
+- Real integration tests (need pi binary).
 
-- 5 个 deferred UI 模式(Settings / About / CommandPalette / ThemePicker / Worktree)
-- auto_approve_after_seconds(超时自动批准)
-- 真集成测试(需要 pi 二进制)
+## Contributing
 
-## 贡献
-
-提 issue 之前先看 `AGENTS.md`。提交前自查:
+Read `AGENTS.md` first. Pre-commit checks:
 
 ```bash
 go build -o awp . && go vet ./... && go test ./... && go test -race ./internal/...
 ```
 
-Commit message 用 Conventional Commits,不加 AI 署名。
+Conventional Commits. No AI co-authorship.
 
 ## License
 
