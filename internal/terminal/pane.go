@@ -127,6 +127,12 @@ func New(id string, width, height int, scrollbackSize int) *Pane {
 		// scrollback is provided by x/vt's Emulator (default 10000
 		// lines); we apply our scrollbackSize limit at resize time.
 		selection: NewSelectionState(),
+		// Initialize altScreenActiveCh here (once, never re-assigned).
+		// Previously this channel was created inside installAltScreenCallback,
+		// which was called from BOTH Start.func1 and installCallbacks.
+		// The duplicate assignment raced with altScreenConsumer's read.
+		// Cluster D.2 follow-up: moved to New so the reference is stable.
+		altScreenActiveCh: make(chan altScreenEvent, 8),
 	}
 }
 
@@ -324,7 +330,11 @@ func (p *Pane) Start(command string, args ...string) tea.Cmd {
 			p.vt = vt.NewEmulator(p.width, p.height)
 			p.vt.SetScrollbackSize(p.scrollbackSize)
 			p.running = true
-			p.installAltScreenCallback() // outside lock to avoid deadlock with callback
+			// Render-only path: install callback here since no consumer
+			// goroutine will be spawned (no installCallbacks called). This
+			// path is for tests + PiClient render-only mode; production
+			// code uses StartCmd which calls installCallbacks.
+			p.installAltScreenCallback()
 			return nil
 		}
 
@@ -348,7 +358,11 @@ func (p *Pane) Start(command string, args ...string) tea.Cmd {
 		// child can read DSR/etc queries). Concurrency via p.mu.
 		p.vt = vt.NewEmulator(p.width, p.height)
 		p.vt.SetScrollbackSize(p.scrollbackSize)
-		p.installAltScreenCallback() // outside lock to avoid deadlock with callback
+		// NOTE: do NOT call installAltScreenCallback here. StartCmd
+		// synchronously calls installCallbacks which is the single owner
+		// of p.altScreenActiveCh + altScreenConsumer in the PTY path.
+		// Calling installAltScreenCallback here too would race with the
+		// consumer reading p.altScreenActiveCh (see Cluster D.2 follow-up).
 		// scrollback + selection already initialized in New()
 
 		// Start read loop
@@ -1559,18 +1573,16 @@ func (p *Pane) installAltScreenCallback() {
 	// post-Start value, never a torn read.
 	//
 	// We avoid p.mu here because Start holds p.mu when calling
-	// us (render-only path: line 273). Acquiring p.mu again would
-	// deadlock against the same goroutine.
+	// us (render-only path). Acquiring p.mu again would deadlock
+	// against the same goroutine.
 	emu := p.vt
 	if emu == nil {
 		return
 	}
-	p.altScreenActiveCh = make(chan altScreenEvent, 8)
-	// Note: consumerDone is initialized by installCallbacks (which
-	// actually launches the consumer goroutine). Just creating the
-	// channel here would leak a never-closed channel on Start() paths
-	// that don't go through installCallbacks (e.g., direct Start in
-	// tests that never call StartCmd).
+	// NOTE: p.altScreenActiveCh is initialized in New() and never
+	// re-assigned. The callback closure captures the channel by
+	// reference; both this registration and the consumer in
+	// installCallbacks see the same channel.
 	emu.SetCallbacks(vt.Callbacks{
 		AltScreen: func(active bool) {
 			// Non-blocking send to the channel. If the consumer is
