@@ -50,6 +50,10 @@ func NewWorktreeManagerFromPaths(repoPath, baseDir string) *WorktreeManager {
 //  2. Branch already exists at another worktree: "already exists".
 //     Recovered by adding without `-b` (attach existing branch).
 func (m *WorktreeManager) CreateWorktree(branchName, baseBranch string) (string, error) {
+	if !IsValidBranchName(branchName) {
+		return "", fmt.Errorf("invalid branch name %q (per git check-ref-format)", branchName)
+	}
+
 	if err := os.MkdirAll(m.baseDir, 0755); err != nil {
 		return "", fmt.Errorf("failed to create worktree base directory: %w", err)
 	}
@@ -253,6 +257,34 @@ func sanitizeBranchName(name string) string {
 	name = strings.TrimPrefix(name, "feature/")
 	name = strings.ReplaceAll(name, "/", "-")
 	return name
+}
+
+// IsValidBranchName defers to git's canonical ref-format validator.
+//
+// Cluster E.3 (2026-06-27 audit): the previous sanitizeBranchName stripped
+// known prefixes and replaced "/" with "-", but did NOT validate against
+// git's full ref-format rules. A Slugify result like "branch.." or
+// "-leading-dash" or "branch.lock" would pass sanitization but be rejected
+// by `git worktree add` with a cryptic message.
+//
+// We defer to git itself (via `git check-ref-format --branch`) rather than
+// re-implementing the rules. Git's validator is the canonical source of
+// truth and handles edge cases (unicode normalization, ASCII control chars,
+// double-dot, etc.) that custom regexes miss.
+//
+// Returns false if `git` is not on PATH (defensive: a missing git binary
+// should not silently accept invalid names that will fail later).
+func IsValidBranchName(name string) bool {
+	if name == "" {
+		return false
+	}
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		return false
+	}
+	// `git check-ref-format --branch <name>` exits 0 if valid, 1 if invalid.
+	cmd := exec.Command(gitPath, "check-ref-format", "--branch", name)
+	return cmd.Run() == nil
 }
 
 func ResolveMainRepo(path string) string {

@@ -1410,13 +1410,25 @@ func (m *Model) createProjectFromPath() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	gitDir := filepath.Join(absPath, ".git")
+	// Cluster E.1 (2026-06-27 audit): resolve symlinks BEFORE the .git check.
+	// os.Stat follows symlinks, which means a symlink to /etc/passwd/.git
+	// (or any user-readable path) could trick the validation. EvalSymlinks
+	// returns the canonical target; if the symlink is broken, it returns an
+	// error which we surface clearly to the user.
+	resolvedPath, err := filepath.EvalSymlinks(absPath)
+	if err != nil {
+		m.notify("Path cannot be resolved (broken symlink?): " + err.Error())
+		return m, nil
+	}
+
+	gitDir := filepath.Join(resolvedPath, ".git")
 	if _, err := os.Stat(gitDir); err != nil {
 		m.notify("Not a git repository")
 		return m, nil
 	}
 
-	name := filepath.Base(absPath)
+	name := filepath.Base(resolvedPath)
+	absPath = resolvedPath // store the canonical path
 
 	newProject := project.NewProject(name, absPath)
 	// Project settings only store explicit user overrides.

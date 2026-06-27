@@ -706,12 +706,6 @@ func (p *Pane) detectAltScreenChanges(data []byte) {
 	}
 }
 
-// captureScrollbackBeforeWrite takes a snapshot of row 0 before vt.Write
-
-// captureScrollbackAfterWrite checks if row 0 changed and captures scrolled line
-
-// isLineVisible checks if a line is still visible on screen
-
 // scheduleRenderTick returns a Cmd to trigger render after throttle interval
 func (p *Pane) scheduleRenderTick() tea.Cmd {
 	p.mu.Lock()
