@@ -123,8 +123,8 @@ type Model struct {
 	blockerListIndex   int
 	blockerFilterInput textinput.Model
 
-	formScrollOffset int
-	formFieldLines   map[int]int
+	formScrollOffset int // user's scroll position in the ticket form (mutated by Update() handlers; read by View() but never mutated by View).
+	formFieldLines   map[int]int // start line of each form field; populated by renderTicketForm; consumed by clampScrollOffset.
 
 	notification string
 	notifyTime   time.Time

@@ -27,6 +27,15 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// version is the logical awp version. For full version info (commit
+// hash, build date), use buildinfo.String() (see versionCmd below).
+//
+// Note: there are TWO version sources:
+//   - This `version` constant: used by observability.Debug for structured logging
+//   - buildinfo.String(): used by `awp version` command (commit + build date)
+//
+// They are intentionally separate: the constant is hardcoded for dev builds
+// while buildinfo is populated at compile time via -ldflags.
 const version = "0.0.0-dev"
 
 // debug is a global --debug flag. Read by all subcommands.
