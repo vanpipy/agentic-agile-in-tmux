@@ -1,6 +1,7 @@
 package board
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
 	"time"
@@ -155,7 +156,10 @@ func (t *Ticket) Touch() {
 	t.UpdatedAt = time.Now()
 }
 
-func (t *Ticket) SetStatus(status TicketStatus) {
+func (t *Ticket) SetStatus(status TicketStatus) error {
+	if err := t.CanTransitionTo(status); err != nil {
+		return err
+	}
 	now := time.Now()
 	t.Status = status
 	t.UpdatedAt = now
@@ -166,6 +170,42 @@ func (t *Ticket) SetStatus(status TicketStatus) {
 	case StatusDone:
 		t.CompletedAt = &now
 	}
+	return nil
+}
+
+// CanTransitionTo enforces the ticket state machine.
+//
+// Cluster D.3 (2026-06-27 audit): the previous SetStatus accepted any
+// transition, allowing drag-drop to move a ticket back to backlog while
+// a pi agent was running (orphan-PTY bug). This method is the canonical
+// gate; SetStatus() and Move() both call it before applying the new state.
+//
+// Rules:
+//   - archived is terminal: no transition out (except archived → archived no-op)
+//   - in_progress → backlog is blocked if AgentStatus == AgentWorking
+//     (would orphan the running pi subprocess)
+//   - All other transitions are allowed (backlog ↔ in_progress ↔ done,
+//     any → archived, done → backlog to reopen)
+//
+// Returns nil for allowed transitions, error otherwise.
+func (t *Ticket) CanTransitionTo(target TicketStatus) error {
+	// Same-status transition is a no-op; always allowed.
+	if t.Status == target {
+		return nil
+	}
+
+	// Archived is terminal — no transition out (except to itself, handled above).
+	if t.Status == StatusArchived {
+		return fmt.Errorf("cannot transition from %s to %s (archived is terminal)", t.Status, target)
+	}
+
+	// Guard against orphan-PTY: in_progress → backlog with running agent.
+	if t.Status == StatusInProgress && target == StatusBacklog && t.AgentStatus == AgentWorking {
+		return fmt.Errorf("cannot move ticket to backlog while agent is %s (stop the agent first)", t.AgentStatus)
+	}
+
+	// All other transitions are allowed.
+	return nil
 }
 
 type Column struct {

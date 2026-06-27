@@ -1,3 +1,54 @@
+// Package terminal provides the PTY-backed terminal pane that awp uses
+// to render pi subprocess output. It wraps an x/vt Emulator for terminal
+// emulation and a creack/pty for the host-side pseudoterminal.
+//
+// Concurrency model (3 actors, 1 mutex, 2 channels):
+//
+//   ┌────────────────────────┐   acquires p.mu   ┌─────────────────────────┐
+//   │  Main goroutine        │ ◀──────────────▶ │  x/vt Emulator          │
+//   │  (Update / View)       │   for writes      │  (vt.Write / vt.Read)   │
+//   └────────────────────────┘                   └─────────────────────────┘
+//             │                                            │
+//             │ p.mu (read/write)                         │ callback (no lock)
+//             ▼                                            ▼
+//   ┌────────────────────────┐                   ┌─────────────────────────┐
+//   │  altScreenConsumer     │                   │  installAltScreen       │
+//   │  (altScreenActiveCh)   │ ◀── channel ───── │  Callback               │
+//   │  acquires p.mu for     │     (non-blocking │  fires synchronously    │
+//   │  channel send          │      on full)     │  from inside vt.Write   │
+//   └────────────────────────┘                   └─────────────────────────┘
+//
+// LOCKING RULES (read these before modifying this file):
+//
+//   1. p.mu is the ONLY shared lock. Never introduce a second mutex for
+//      fields already protected by p.mu — it'll deadlock with itself.
+//
+//   2. The alt-screen callback fires synchronously from inside vt.Write()
+//      (called by handleOutputLocked with p.mu held). The callback MUST
+//      NOT take p.mu (would deadlock against itself). Instead it sends
+//      to altScreenActiveCh non-blockingly; altScreenConsumer applies
+//      the update under p.mu.
+//
+//   3. inputDrain (x/vt internal pipe drainer) does NOT hold p.mu. It
+//      reads from vt.Read() independently. Without it, vt.Write would
+//      block on the internal pipe (responses to DSR/etc queries never
+//      drained).
+//
+//   4. Stop() releases p.mu BEFORE closing channels, because the consumer
+//      goroutine reads channels without holding p.mu (its select is the
+//      canonical pattern for closing-during-receive). Closing under p.mu
+//      would deadlock: Stop would wait for itself.
+//
+//   5. stopOnce (sync.Once) ensures Stop is idempotent. Don't replace
+//      with a bool check — sync.Once is goroutine-safe.
+//
+// Common bugs to avoid:
+//   - Adding p.mu acquisition inside the alt-screen callback (deadlock).
+//   - Closing consumerDone or altScreenActiveCh while holding p.mu
+//     (deadlock with the consumer goroutine).
+//   - Calling vt.Write outside handleOutputLocked (race on x/vt state).
+//
+// See Cluster D.2 of the 2026-06-27 audit for the design rationale.
 package terminal
 
 import (

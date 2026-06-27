@@ -146,7 +146,10 @@ func (s *TicketStore) Move(id board.TicketID, newStatus board.TicketStatus) erro
 	if !ok {
 		return board.ErrTicketNotFound
 	}
-	t.SetStatus(newStatus)
+	// SetStatus enforces the state machine (Cluster D.3); propagate its error.
+	if err := t.SetStatus(newStatus); err != nil {
+		return err
+	}
 	return nil
 }
 

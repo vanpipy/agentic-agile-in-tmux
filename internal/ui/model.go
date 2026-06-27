@@ -264,13 +264,22 @@ func NewModel(cfg *config.Config, globalStore *project.GlobalTicketStore, projec
 		m.filterProjectIDs[filterProjectID] = true
 	}
 
-	// Reset all agent statuses on startup since there are no active sessions yet.
-	// This prevents stale "working" statuses from persisting after app restart.
+	// Reset all agent statuses on startup so the UI doesn't show stale
+	// "working" badges after app restart. In-memory only — we deliberately
+	// do NOT Save() to disk because:
+	//
+	//   (a) If pi was actually still running (orphan-PTY scenario from a
+	//       crashed awp), downgrading the on-disk state would lose that
+	//       signal. A future orphan-detection pass (D.1 Phase 2) needs the
+	//       disk state to identify orphans via PID lookup.
+	//
+	//   (b) The disk file is unchanged between restarts unless a real event
+	//       happens (spawn, stop, status change). Writing on every launch
+	//       was unnecessary churn.
+	//
+	// See Cluster D.1 of the 2026-06-27 audit for context.
 	for _, ticket := range globalStore.All() {
-		if ticket.AgentStatus != board.AgentNone {
-			ticket.AgentStatus = board.AgentNone
-			globalStore.Save(ticket)
-		}
+		ticket.AgentStatus = board.AgentNone
 	}
 
 	m.refreshColumnTickets()
@@ -917,6 +926,12 @@ func (m *Model) dropTicket() (tea.Model, tea.Cmd) {
 	}
 
 	m.globalStore.Move(ticket.ID, targetStatus)
+	if err := m.globalStore.Move(ticket.ID, targetStatus); err != nil {
+		m.notify("Move rejected: " + err.Error())
+		m.dragging = false
+		m.dragTargetColumn = 0
+		return m, nil
+	}
 	m.refreshColumnTickets()
 	m.saveTicket(ticket)
 
@@ -2303,6 +2318,10 @@ func (m *Model) quickMoveTicket() (tea.Model, tea.Cmd) {
 	}
 
 	m.globalStore.Move(ticket.ID, nextStatus)
+	if err := m.globalStore.Move(ticket.ID, nextStatus); err != nil {
+		m.notify("Move rejected: " + err.Error())
+		return m, nil
+	}
 	m.refreshColumnTickets()
 	m.selectTicketByID(ticket.ID)
 	m.saveTicket(ticket)
@@ -2323,6 +2342,10 @@ func (m *Model) quickMoveTicketBackward() (tea.Model, tea.Cmd) {
 	}
 
 	m.globalStore.Move(ticket.ID, prevStatus)
+	if err := m.globalStore.Move(ticket.ID, prevStatus); err != nil {
+		m.notify("Move rejected: " + err.Error())
+		return m, nil
+	}
 	m.refreshColumnTickets()
 	m.selectTicketByID(ticket.ID)
 	m.saveTicket(ticket)
