@@ -43,6 +43,7 @@ func writeSessionJSONL(t *testing.T, dir, id, cwd string, lines []map[string]any
 
 func TestSessionInfo_ToolCount_Phase3(t *testing.T) {
 	dir := t.TempDir()
+	t.Setenv("HOME", dir) // CASTRATION-2
 	store, err := NewSessionStore(dir)
 	if err != nil {
 		t.Fatalf("NewSessionStore: %v", err)
@@ -75,6 +76,7 @@ func TestSessionInfo_ToolCount_Phase3(t *testing.T) {
 
 func TestSessionStore_FindByID_Full(t *testing.T) {
 	dir := t.TempDir()
+	t.Setenv("HOME", dir) // CASTRATION-2
 	store, err := NewSessionStore(dir)
 	if err != nil {
 		t.Fatalf("NewSessionStore: %v", err)
@@ -94,6 +96,7 @@ func TestSessionStore_FindByID_Full(t *testing.T) {
 
 func TestSessionStore_FindByID_Prefix(t *testing.T) {
 	dir := t.TempDir()
+	t.Setenv("HOME", dir) // CASTRATION-2
 	store, err := NewSessionStore(dir)
 	if err != nil {
 		t.Fatalf("NewSessionStore: %v", err)
@@ -112,6 +115,7 @@ func TestSessionStore_FindByID_Prefix(t *testing.T) {
 
 func TestSessionStore_FindByID_NotFound(t *testing.T) {
 	dir := t.TempDir()
+	t.Setenv("HOME", dir) // CASTRATION-2
 	store, err := NewSessionStore(dir)
 	if err != nil {
 		t.Fatalf("NewSessionStore: %v", err)
@@ -123,6 +127,7 @@ func TestSessionStore_FindByID_NotFound(t *testing.T) {
 
 func TestSessionInfo_FirstAndLastPrompt(t *testing.T) {
 	dir := t.TempDir()
+	t.Setenv("HOME", dir) // CASTRATION-2
 	store, err := NewSessionStore(dir)
 	if err != nil {
 		t.Fatalf("NewSessionStore: %v", err)
@@ -152,6 +157,7 @@ func TestSessionInfo_FirstAndLastPrompt(t *testing.T) {
 // maxScanLines (200) — not 1000.
 func TestParseSessionInfo_BoundedScan(t *testing.T) {
 	dir := t.TempDir()
+	t.Setenv("HOME", dir) // CASTRATION-2
 	store, err := NewSessionStore(dir)
 	if err != nil {
 		t.Fatalf("NewSessionStore: %v", err)
@@ -186,6 +192,7 @@ func TestParseSessionInfo_BoundedScan(t *testing.T) {
 // to a later entry's timestamp (not just the header time).
 func TestParseSessionInfo_LastActivity(t *testing.T) {
 	dir := t.TempDir()
+	t.Setenv("HOME", dir) // CASTRATION-2
 	store, err := NewSessionStore(dir)
 	if err != nil {
 		t.Fatalf("NewSessionStore: %v", err)
@@ -218,6 +225,7 @@ func TestParseSessionInfo_LastActivity(t *testing.T) {
 // the count of files that failed to parse.
 func TestSessionStore_ListSkipped(t *testing.T) {
 	dir := t.TempDir()
+	t.Setenv("HOME", dir) // CASTRATION-2
 	store, err := NewSessionStore(dir)
 	if err != nil {
 		t.Fatalf("NewSessionStore: %v", err)
@@ -313,6 +321,7 @@ func TestSessionStore_FindByID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSessionStore: %v", err)
 	}
+	t.Setenv("HOME", tmp) // CASTRATION-2: buildIndex requires HOME
 	got, ok := store.FindByID("def-456")
 	if !ok {
 		t.Fatal("FindByID should find def-456")

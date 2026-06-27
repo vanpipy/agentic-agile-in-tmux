@@ -20,7 +20,10 @@ import (
 // (proving the index is being reused).
 func TestFindByID_BuildsIndexOnFirstCall(t *testing.T) {
 	// Set up a fake pi agent dir with one session file.
+	// CASTRATION-2: buildIndex refuses off-home paths, so set HOME
+	// to the test's temp dir to make the test path "under home".
 	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
 	writeFakeSessionFile(t, tmpDir, "--fake--", "fake-uuid-1234567890ab")
 
 	store, err := NewSessionStore(tmpDir)
@@ -58,6 +61,7 @@ func TestFindByID_BuildsIndexOnFirstCall(t *testing.T) {
 // matching (≥8 chars) after the lazy-index refactor.
 func TestFindByID_PrefixMatchStillWorks(t *testing.T) {
 	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
 	writeFakeSessionFile(t, tmpDir, "--fake--", "abcdef1234567890xyz")
 
 	store, err := NewSessionStore(tmpDir)
@@ -83,6 +87,7 @@ func TestFindByID_PrefixMatchStillWorks(t *testing.T) {
 // TestFindByID_NotFound pins the miss contract.
 func TestFindByID_NotFound(t *testing.T) {
 	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
 	writeFakeSessionFile(t, tmpDir, "--fake--", "real-session-id-1234")
 
 	store, err := NewSessionStore(tmpDir)

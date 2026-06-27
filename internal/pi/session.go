@@ -357,9 +357,23 @@ func (s *SessionStore) FindByID(id string) (SessionInfo, bool) {
 
 // buildIndex populates s.index by walking every sessions/<encoded-cwd>/
 // subdir. Called once via sync.Once on first FindByID.
+//
+// CASTRATION-2 from post-P3P4 audit: defensively verify root is under
+// the user's HOME before walking. A symlinked agentDir could otherwise
+// expose unrelated directories to FindByID. We never WRITE anything
+// (read-only), so the risk is information disclosure; this is defense-
+// in-depth.
 func (s *SessionStore) buildIndex() {
 	s.index = make(map[string]string)
 	root := s.sessionsDir()
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return
+	}
+	if !isUnderHome(root, home) {
+		// Off-home root: refuse to walk. Index stays empty.
+		return
+	}
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		return
@@ -381,6 +395,37 @@ func (s *SessionStore) buildIndex() {
 			s.index[stem] = filepath.Join(dir, f.Name())
 		}
 	}
+}
+
+// isUnderHome reports whether path is the home directory or a
+// descendant. Both paths must be absolute. Resolves symlinks via
+// EvalSymlinks before comparison.
+func isUnderHome(path, home string) bool {
+	if path == "" || home == "" {
+		return false
+	}
+	resolvedPath, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		// Path doesn't exist or isn't accessible; treat as off-home.
+		return false
+	}
+	resolvedHome, err := filepath.EvalSymlinks(home)
+	if err != nil {
+		return false
+	}
+	if resolvedPath == resolvedHome {
+		return true
+	}
+	// Check if resolvedPath is under resolvedHome.
+	rel, err := filepath.Rel(resolvedHome, resolvedPath)
+	if err != nil {
+		return false
+	}
+	// rel must not start with ".." and must not be ".."
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return false
+	}
+	return true
 }
 
 // encodeCwdKey converts an absolute path to pi's session-dir naming
