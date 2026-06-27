@@ -98,15 +98,18 @@ type Ticket struct {
 	BranchName   string `json:"branch_name,omitempty"`
 	BaseBranch   string `json:"base_branch,omitempty"`
 
-	// AgentStatus / AgentSpawnedAt / AgentPort / AgentSessionID are
-	// legacy from a multi-agent era; awp now only spawns pi, and
-	// the Pi* fields below are the canonical state. AgentStatus is
-	// still serialized because Phase 4 interception UI reads it
-	// (showing e.g. "opencode is running"); in the single-agent
-	// world it simply mirrors PiState.
+	// AgentStatus / AgentSpawnedAt / AgentSessionID are used for pi
+	// (the single supported agent) — despite the "Agent" prefix, they
+	// are NOT multi-agent residue. They track:
+	//   - AgentStatus: high-level state (idle/working/etc.) for UI badges
+	//   - AgentSpawnedAt: when the agent started, for "X minutes ago" display
+	//   - AgentSessionID: pi session UUID for resume UX
+	//
+	// The Pi* fields below are the canonical runtime state; AgentStatus
+	// mirrors PiState in the single-agent world. AgentPort was removed
+	// in M7 (zero readers; legacy multi-agent TCP port concept).
 	AgentStatus    AgentStatus `json:"agent_status"`
 	AgentSpawnedAt *time.Time  `json:"agent_spawned_at,omitempty"`
-	AgentPort      int         `json:"agent_port,omitempty"`
 	AgentSessionID string      `json:"agent_session_id,omitempty"`
 
 	// Pi session binding (Phase 1+).
