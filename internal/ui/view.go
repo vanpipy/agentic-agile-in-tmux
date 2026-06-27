@@ -601,6 +601,12 @@ func (m *Model) renderHelp() string {
 		"  " + keyStyle.Render("/") + descStyle.Render("     Search/filter         ") + keyStyle.Render("O") + descStyle.Render("       Settings") + "\n" +
 		"  " + keyStyle.Render("?") + descStyle.Render("     Toggle help           ") + keyStyle.Render("q") + descStyle.Render("       Quit") + "\n\n" +
 		sep + "\n" +
+		sectionStyle.Render("  🔄 Ticket State Machine") + "\n" +
+		sep + "\n" +
+		"  " + keyStyle.Render("→") + descStyle.Render("  in_progress to backlog blocked while agent running") + "\n" +
+		"  " + keyStyle.Render("→") + descStyle.Render("  done to in_progress or backlog allowed (reopen/restart)") + "\n" +
+		"  " + keyStyle.Render("→") + descStyle.Render("  any to archived allowed; archived is terminal") + "\n\n" +
+		sep + "\n" +
 		"  " + lipgloss.NewStyle().Foreground(m.colors.warning).Render("💡") + m.dimStyle().Render(" Tip: Hold Shift to select text in agent view") + "\n\n" +
 		"  " + m.dimStyle().Render("Press any key to close")
 

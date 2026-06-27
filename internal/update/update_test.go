@@ -216,8 +216,22 @@ func TestCheck_HTTPSuccess(t *testing.T) {
 // returns one of the three known values.
 func TestDetectInstallMethod_NonePath(t *testing.T) {
 	m := DetectInstallMethod()
-	if m != InstallHomebrew && m != InstallGo && m != InstallUnknown {
-		t.Errorf("DetectInstallMethod() = %d; want one of known InstallMethod constants", m)
+	// Bound check: must be in valid enum range. The previous
+	// "m != A && m != B && m != C" check passed for ANY future enum
+	// value (silent forward-compat bug). This bound check fails if
+	// anyone adds an InstallMethod without updating this test.
+	if m < 0 || m > InstallUnknown {
+		t.Errorf("DetectInstallMethod() = %d; want value in [0, %d] (one of known InstallMethod constants). "+
+			"If you added a new InstallMethod, update this test.",
+			m, InstallUnknown)
+	}
+	// Sanity: must be one of the three known values (not an in-range
+	// orphan constant).
+	switch m {
+	case InstallHomebrew, InstallGo, InstallUnknown:
+		// ok
+	default:
+		t.Errorf("DetectInstallMethod() = %d; want InstallHomebrew, InstallGo, or InstallUnknown", m)
 	}
 }
 

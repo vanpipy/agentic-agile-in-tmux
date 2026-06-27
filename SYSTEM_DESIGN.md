@@ -408,6 +408,36 @@ type PiSessionInfo struct {
 }
 ```
 
+### 5.4 Ticket Status 状态机
+
+Ticket 状态转换由 `board.Ticket.CanTransitionTo(target TicketStatus) error` 强制验证。状态机(2026-06-27 D 修复)：
+
+```
+              ┌─────────────────────────────┐
+              ▼                             │
+backlog ⇄ in_progress ──► done ─────────────┤
+                │           │               │
+                └───────────┴──► archived ◄──┘
+                              (terminal)
+```
+
+| 转换 | 允许？ | 说明 |
+|---|---|---|
+| `backlog` → `in_progress` | ✅ | 开始工作 |
+| `backlog` → `backlog` | ✅ | no-op |
+| `backlog` → `done` | ✅ | 简单任务 |
+| `backlog` → `archived` | ✅ | 取消 |
+| `in_progress` → `backlog` (无 agent) | ✅ | 重新考虑优先级 |
+| `in_progress` → `backlog` (AgentWorking) | ❌ | 会孤立运行中的 pi 子进程 |
+| `in_progress` → `done` | ✅ | 完成 |
+| `in_progress` → `archived` | ✅ | 放弃 |
+| `done` → `backlog` | ✅ | 重新打开 |
+| `done` → `in_progress` | ✅ | 重启 |
+| `done` → `archived` | ✅ | 归档 |
+| `archived` → * | ❌ | archived 是终态 |
+
+UI 拒绝时通过通知 toast 反馈：`Move rejected: cannot move ticket to backlog while agent is working (stop the agent first)`。
+
 ---
 
 ## 6. Pi 集成 — 设计的核心

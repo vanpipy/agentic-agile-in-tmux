@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -45,6 +46,13 @@ type SessionInfo struct {
 type SessionStore struct {
 	agentDir   string // defaults to ~/.pi/agent
 	lastSkipped int   // count of files skipped during the last List call
+
+	// Lazy index for FindByID. Built on first call; subsequent lookups
+	// are O(1). The index is stale-tolerant: if files are added/removed
+	// after the index is built, FindByID may return stale results. For
+	// one-shot CLI usage this is fine; the TUI uses List(cwd) instead.
+	indexOnce sync.Once
+	index     map[string]string // session ID (stem of .jsonl) → full path
 }
 
 // NewSessionStore creates a SessionStore. agentDir is the path to
@@ -308,13 +316,48 @@ func parseSessionInfo(path string) (SessionInfo, error) {
 // FindByID locates a session file by ID across all encoded-cwd dirs.
 // Returns (SessionInfo, true) on hit, (zero, false) on miss.
 //
-// Walks every sessions/<encoded-cwd>/ subdir; O(n) over session count.
+// First call builds an in-memory index (id → filepath); subsequent calls
+// are O(1) lookup. Index is built lazily via sync.Once. Trade-offs:
+//   - One-shot CLI calls: index is built once, used once — same cost as
+//     the previous O(n) walk, plus a slightly higher peak memory.
+//   - Long-running TUI: the TUI doesn't use FindByID (uses List(cwd)
+//     instead), so the index never gets built.
+//
+// Prefix matching (≥8 chars) is preserved for backward compatibility.
+//
 // Phase 3 caller: `awp session show <id>`, `awp session resume <id>`.
 func (s *SessionStore) FindByID(id string) (SessionInfo, bool) {
+	s.indexOnce.Do(s.buildIndex)
+
+	// Try exact match first.
+	if path, ok := s.index[id]; ok {
+		if info, err := parseSessionInfo(path); err == nil {
+			return info, true
+		}
+	}
+
+	// Fall back to prefix match (id >= 8 chars).
+	if len(id) >= 8 {
+		for stem, path := range s.index {
+			if strings.HasPrefix(stem, id) {
+				if info, err := parseSessionInfo(path); err == nil {
+					return info, true
+				}
+			}
+		}
+	}
+
+	return SessionInfo{}, false
+}
+
+// buildIndex populates s.index by walking every sessions/<encoded-cwd>/
+// subdir. Called once via sync.Once on first FindByID.
+func (s *SessionStore) buildIndex() {
+	s.index = make(map[string]string)
 	root := s.sessionsDir()
 	entries, err := os.ReadDir(root)
 	if err != nil {
-		return SessionInfo{}, false
+		return
 	}
 	for _, e := range entries {
 		if !e.IsDir() {
@@ -330,26 +373,9 @@ func (s *SessionStore) FindByID(id string) (SessionInfo, bool) {
 				continue
 			}
 			stem := strings.TrimSuffix(f.Name(), ".jsonl")
-			// Exact match: full id (or filename without .jsonl)
-			if stem == id {
-				info, err := parseSessionInfo(filepath.Join(dir, f.Name()))
-				if err != nil {
-					continue
-				}
-				return info, true
-			}
-			// Prefix match only for ids >= 8 chars (avoids ambiguity)
-			const minPrefix = 8
-			if len(id) >= minPrefix && strings.HasPrefix(stem, id) {
-				info, err := parseSessionInfo(filepath.Join(dir, f.Name()))
-				if err != nil {
-					continue
-				}
-				return info, true
-			}
+			s.index[stem] = filepath.Join(dir, f.Name())
 		}
 	}
-	return SessionInfo{}, false
 }
 
 // encodeCwdKey converts an absolute path to pi's session-dir naming

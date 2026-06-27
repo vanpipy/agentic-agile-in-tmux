@@ -1,6 +1,7 @@
 package board
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -227,14 +228,6 @@ func DefaultColumns() []Column {
 	}
 }
 
-var (
-	ErrTicketNotFound = &BoardError{Message: "ticket not found"}
-)
-
-type BoardError struct {
-	Message string
-}
-
-func (e *BoardError) Error() string {
-	return e.Message
-}
+// ErrTicketNotFound is returned when a ticket lookup fails.
+// Use errors.Is(err, board.ErrTicketNotFound) to test for it.
+var ErrTicketNotFound = errors.New("ticket not found")

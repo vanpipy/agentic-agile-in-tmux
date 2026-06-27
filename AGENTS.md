@@ -158,6 +158,42 @@ PTY management + terminal emulation. For internals, read `internal/terminal/pane
 - Don't assume the emulator handles every escape sequence; some need manual parsing.
 - Render state must use a `dirty` flag; returning a cached view freezes the UI (see `handleOutput` regression test).
 
+**Concurrency invariants** (see top-of-file doc-comment in `pane.go` for the full diagram):
+
+- `p.mu` is the ONLY shared lock. Never introduce a second mutex for fields already protected by `p.mu` — it'll deadlock with itself.
+- The alt-screen callback fires synchronously from inside `vt.Write()` (called by `handleOutputLocked` with `p.mu` held). The callback MUST NOT take `p.mu`. It sends to `altScreenActiveCh` non-blockingly; `altScreenConsumer` applies the update under `p.mu`.
+- `p.altScreenActiveCh` is initialized **once** in `New()` and never re-assigned. The callback and consumer share the same channel reference.
+- `inputDrain` does NOT hold `p.mu`. It reads from `vt.Read()` independently to prevent the x/vt internal pipe from blocking `vt.Write`.
+- `Stop()` releases `p.mu` BEFORE closing channels. Closing channels while holding `p.mu` deadlocks the consumer.
+- `stopOnce` (sync.Once) makes `Stop()` idempotent. Don't replace with a bool check.
+
+### 5.5 Ticket State Machine
+
+Ticket status transitions are validated by `Ticket.CanTransitionTo(target TicketStatus) error` in `internal/board/board.go`. The state machine:
+
+```
+              ┌─────────────────────────────┐
+              ▼                             │
+backlog ⇄ in_progress ──► done ─────────────┤
+                │           │               │
+                └───────────┴──► archived ◄──┘
+                              (terminal)
+```
+
+- **`backlog` ⇄ `in_progress`**: allowed in both directions. `in_progress → backlog` with `AgentStatus == AgentWorking` is BLOCKED (would orphan the running pi).
+- **`in_progress` → `done`**: allowed; marks `CompletedAt`.
+- **`done` → `backlog` or `done` → `in_progress`**: allowed (user reopens/restarts).
+- **Any → `archived`**: allowed.
+- **`archived` → ***: FORBIDDEN (archived is terminal). `archived → archived` is a no-op.
+
+UI surfaces rejections via the existing notification toast:
+```go
+if err := m.globalStore.Move(ticket.ID, target); err != nil {
+    m.notify("Move rejected: " + err.Error())
+    return m, nil
+}
+```
+
 ---
 
 ## 6. Pre-Commit

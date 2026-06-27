@@ -289,14 +289,6 @@ func TestDefaultColumns(t *testing.T) {
 	}
 }
 
-func TestBoardError(t *testing.T) {
-	err := &BoardError{Message: "test error"}
-
-	if err.Error() != "test error" {
-		t.Errorf("BoardError.Error() = %q; want %q", err.Error(), "test error")
-	}
-}
-
 func TestErrTicketNotFound(t *testing.T) {
 	if ErrTicketNotFound.Error() != "ticket not found" {
 		t.Errorf("ErrTicketNotFound.Error() = %q; want %q", ErrTicketNotFound.Error(), "ticket not found")

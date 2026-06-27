@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"syscall"
@@ -150,17 +151,14 @@ var projectNewCmd = &cobra.Command{
 		if len(args) > 0 {
 			name = args[0]
 		} else {
+			// Derive project name from the cwd's basename via filepath.Base.
+			// This is portable (handles both / and \ separators) and replaces
+			// a hand-written character loop that only handled Unix '/'.
 			abs, err := os.Getwd()
 			if err != nil {
 				return fmt.Errorf("get current directory: %w", err)
 			}
-			name = abs
-			for i := len(name) - 1; i >= 0; i-- {
-				if name[i] == '/' {
-					name = name[i+1:]
-					break
-				}
-			}
+			name = filepath.Base(abs)
 		}
 		return app.CreateProject(cfg, name, repoPath)
 	},
