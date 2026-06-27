@@ -909,6 +909,16 @@ func (m *Model) dropTicket() (tea.Model, tea.Cmd) {
 	ticket := tickets[m.dragSourceTicket]
 	targetStatus := m.columns[m.dragTargetColumn].Status
 
+	// Caller-side orphan-agent guard (FOOT-3): CanTransitionTo is pure
+	// (no agent semantics). The UI must check AgentStatus BEFORE
+	// invoking Move() to prevent orphaning a running pi subprocess.
+	if err := m.checkOrphanAgentBeforeMove(ticket, targetStatus); err != nil {
+		m.notify("Move rejected: " + err.Error())
+		m.dragging = false
+		m.dragTargetColumn = 0
+		return m, nil
+	}
+
 	if targetStatus == board.StatusInProgress && ticket.WorktreePath == "" {
 		if ticket.UseWorktree {
 			if err := m.setupWorktree(ticket); err != nil {
@@ -2341,6 +2351,12 @@ func (m *Model) quickMoveTicketBackward() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// Caller-side orphan-agent guard (see dropTicket for the rationale).
+	if err := m.checkOrphanAgentBeforeMove(ticket, prevStatus); err != nil {
+		m.notify("Move rejected: " + err.Error())
+		return m, nil
+	}
+
 	if err := m.globalStore.Move(ticket.ID, prevStatus); err != nil {
 		m.notify("Move rejected: " + err.Error())
 		return m, nil
@@ -2351,6 +2367,22 @@ func (m *Model) quickMoveTicketBackward() (tea.Model, tea.Cmd) {
 	m.notify("Moved to " + string(prevStatus))
 
 	return m, nil
+}
+
+// checkOrphanAgentBeforeMove is the caller-side orphan-agent guard.
+// Returns an error if moving ticket to targetStatus would orphan a
+// running pi subprocess (e.g., in_progress → backlog with AgentWorking).
+//
+// FOOT-3 (post-P3P4 audit): this check used to live inside
+// board.Ticket.CanTransitionTo, which coupled the board package to
+// agent semantics. The check moved here so the board package can be a
+// PURE state-machine validator; callers (UI layer) handle runtime
+// concerns like agent status.
+func (m *Model) checkOrphanAgentBeforeMove(ticket *board.Ticket, targetStatus board.TicketStatus) error {
+	if ticket.Status == board.StatusInProgress && targetStatus == board.StatusBacklog && ticket.AgentStatus == board.AgentWorking {
+		return fmt.Errorf("cannot move ticket to backlog while agent is %s (stop the agent first)", ticket.AgentStatus)
+	}
+	return nil
 }
 
 func (m *Model) setupWorktree(ticket *board.Ticket) error {

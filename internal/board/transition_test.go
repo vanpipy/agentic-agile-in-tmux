@@ -85,39 +85,16 @@ func TestTicket_CanTransitionTo_BasicMatrix(t *testing.T) {
 	}
 }
 
-// TestTicket_CanTransitionTo_RejectsOrphanAgent pins the contract that
-// in_progress → backlog is FORBIDDEN when an agent is running. This is
-// the user-facing safety check: a drag-drop that would orphan the pi
-// subprocess must be rejected with a clear error message.
-func TestTicket_CanTransitionTo_RejectsOrphanAgent(t *testing.T) {
-	ticket := NewTicket("running-ticket", "p1")
-	ticket.Status = StatusInProgress
-	ticket.AgentStatus = AgentWorking
+// TestTicket_CanTransitionTo_RejectsOrphanAgent was REMOVED in the FOOT-3
+// follow-up (post-P3P4 audit): CanTransitionTo is now PURE (no agent
+// coupling). The orphan-agent guard moved to the UI layer (see
+// model.go:dropTicket / quickMoveTicket which check AgentWorking
+// before calling Move()).
 
-	err := ticket.CanTransitionTo(StatusBacklog)
-	if err == nil {
-		t.Fatal("CanTransitionTo(in_progress → backlog with AgentWorking) returned nil; want error")
-	}
-	// Error must mention agent so the user understands the constraint.
-	if !contains(err.Error(), "agent") && !contains(err.Error(), "working") && !contains(err.Error(), "running") {
-		t.Errorf("error = %q; want it to mention 'agent' or 'working' so user understands the constraint", err.Error())
-	}
-}
-
-// TestTicket_CanTransitionTo_AllowsReopenWhenAgentIdle pins the contract
-// that in_progress → backlog IS allowed when no agent is running (i.e.,
-// the user simply changed their mind about prioritization). This is the
-// counter-case to TestTicket_CanTransitionTo_RejectsOrphanAgent.
-func TestTicket_CanTransitionTo_AllowsReopenWhenAgentIdle(t *testing.T) {
-	ticket := NewTicket("idle-ticket", "p1")
-	ticket.Status = StatusInProgress
-	ticket.AgentStatus = AgentIdle // not actively working
-
-	err := ticket.CanTransitionTo(StatusBacklog)
-	if err != nil {
-		t.Errorf("CanTransitionTo(in_progress → backlog with AgentIdle): got error %v; want nil (reopen allowed when no agent is actively working)", err)
-	}
-}
+// TestTicket_CanTransitionTo_AllowsReopenWhenAgentIdle was REMOVED:
+// with CanTransitionTo now pure, this test is trivially true for
+// all AgentStatus values. The caller-side guard (UI layer) is what
+// distinguishes AgentWorking (blocked) from AgentIdle (allowed).
 
 // TestTicket_CanTransitionTo_RejectsArchivedTerminal pins the contract
 // that archived is terminal. From archived, you cannot transition to any
