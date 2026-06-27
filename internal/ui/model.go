@@ -1445,8 +1445,10 @@ func (m *Model) createProjectFromPath() (tea.Model, tea.Cmd) {
 	absPath = resolvedPath // store the canonical path
 
 	newProject := project.NewProject(name, absPath)
-	// Project settings only store explicit user overrides.
-	// Empty values cascade to global config via getDefaultAgent() and GetBranchPrefix().
+	// Project settings only store explicit user overrides. Empty values
+// cascade to global config via the cascading getters on project.Project
+// (e.g., GetBranchPrefix(), GetBranchTemplate(), GetSlugMaxLength()).
+// There is no agent selection — awp is pi-only per AGENTS.md §3 Rule 1.
 
 	if err := m.projectRegistry.Add(newProject); err != nil {
 		m.notify("Failed to save: " + err.Error())
@@ -2454,9 +2456,9 @@ func (m *Model) spawnAgent() (tea.Model, tea.Cmd) {
 		}
 	}
 
-	// awp is pi-only: use m.config.Pi directly. The previous
-	// multi-agent abstraction (ticket.AgentType / m.config.Defaults.DefaultAgent /
-	// m.config.Agents / config.AgentConfig) was removed 2026-06-22.
+	// awp is pi-only: use m.config.Pi directly. There is no agent selection
+// at runtime. The previous multi-agent abstraction was removed
+// 2026-06-22 (see AGENTS.md §3 Rule 1).
 
 	m.mode = ModeSpawning
 	m.spawningTicketID = ticket.ID

@@ -869,43 +869,23 @@ func (m *Model) renderTicketForm() string {
 	totalLines := len(lines)
 	needsScroll := totalLines > viewportHeight
 
-	if needsScroll {
-		startLine, hasStart := fieldStartLines[m.ticketFormField]
-		endLine, hasEnd := fieldEndLines[m.ticketFormField]
-		if hasStart && hasEnd {
-			fieldHeight := endLine - startLine + 1
-			effectiveViewport := viewportHeight - 2
-
-			if fieldHeight <= effectiveViewport {
-				if endLine >= m.formScrollOffset+effectiveViewport {
-					m.formScrollOffset = endLine - effectiveViewport + 1
-				}
-				if startLine < m.formScrollOffset {
-					m.formScrollOffset = startLine
-				}
-			} else {
-				m.formScrollOffset = startLine
-			}
-		}
-		maxOffset := totalLines - viewportHeight
-		if maxOffset < 0 {
-			maxOffset = 0
-		}
-		if m.formScrollOffset > maxOffset {
-			m.formScrollOffset = maxOffset
-		}
-		if m.formScrollOffset < 0 {
-			m.formScrollOffset = 0
-		}
-	} else {
-		m.formScrollOffset = 0
-	}
+	// AGENTS.md §5.3: View() is pure. Compute the effective scroll offset
+	// in a local variable; do NOT mutate m.formScrollOffset here. The
+	// only legitimate writers of m.formScrollOffset are Update() handlers
+	// (Tab/shift+tab to switch fields, mouse wheel for user-driven scroll).
+	// See internal/ui/view_purity_test.go for the regression contract.
+	effectiveOffset := computeFormScrollOffset(
+		m.ticketFormField,
+		m.formScrollOffset,
+		fieldStartLines, fieldEndLines,
+		viewportHeight, totalLines,
+	)
 
 	var visibleLines []string
 	scrollIndicatorStyle := lipgloss.NewStyle().Foreground(m.colors.info).Bold(true)
 
-	hasAboveIndicator := needsScroll && m.formScrollOffset > 0
-	hasBelowIndicator := needsScroll && m.formScrollOffset+viewportHeight < totalLines
+	hasAboveIndicator := needsScroll && effectiveOffset > 0
+	hasBelowIndicator := needsScroll && effectiveOffset+viewportHeight < totalLines
 
 	availableForContent := viewportHeight
 	if hasAboveIndicator {
@@ -915,16 +895,16 @@ func (m *Model) renderTicketForm() string {
 		availableForContent--
 	}
 
-	endLine := m.formScrollOffset + availableForContent
+	endLine := effectiveOffset + availableForContent
 	if endLine > totalLines {
 		endLine = totalLines
 	}
 
 	if hasAboveIndicator {
-		visibleLines = append(visibleLines, scrollIndicatorStyle.Render(fmt.Sprintf("  ▲ %d more above", m.formScrollOffset)))
+		visibleLines = append(visibleLines, scrollIndicatorStyle.Render(fmt.Sprintf("  ▲ %d more above", effectiveOffset)))
 	}
 
-	for i := m.formScrollOffset; i < endLine; i++ {
+	for i := effectiveOffset; i < endLine; i++ {
 		visibleLines = append(visibleLines, lines[i])
 	}
 
@@ -1858,4 +1838,59 @@ func (m *Model) renderDepBadge(ticket *board.Ticket) string {
 	default:
 		return depStyle.Render(fmt.Sprintf("⛓%d↓", blocksCount))
 	}
+}
+
+// computeFormScrollOffset is a pure function that returns the scroll
+// offset needed to keep the active ticket-form field visible. It does
+// NOT mutate any state — callers use the return value for rendering.
+//
+// AGENTS.md §5.3: "View() is a pure render of model state, no side
+// effects." This function exists to satisfy that contract.
+//
+// The logic mirrors the previous in-place mutation: if the active
+// field is below the viewport, scroll so it's at the bottom; if
+// above, scroll so it's at the top. If neither, keep the current
+// scroll offset (clamped to valid range).
+func computeFormScrollOffset(
+	activeField int,
+	currentOffset int,
+	fieldStartLines, fieldEndLines map[int]int,
+	viewportHeight, totalLines int,
+) int {
+	if totalLines <= viewportHeight {
+		return 0
+	}
+	startLine, hasStart := fieldStartLines[activeField]
+	endLine, hasEnd := fieldEndLines[activeField]
+	if !hasStart || !hasEnd {
+		return clampScrollOffset(currentOffset, totalLines, viewportHeight)
+	}
+	fieldHeight := endLine - startLine + 1
+	effectiveViewport := viewportHeight - 2
+	if fieldHeight <= effectiveViewport {
+		if endLine >= currentOffset+effectiveViewport {
+			return clampScrollOffset(endLine-effectiveViewport+1, totalLines, viewportHeight)
+		}
+		if startLine < currentOffset {
+			return clampScrollOffset(startLine, totalLines, viewportHeight)
+		}
+		return clampScrollOffset(currentOffset, totalLines, viewportHeight)
+	}
+	// Field is taller than the viewport — pin to its top.
+	return clampScrollOffset(startLine, totalLines, viewportHeight)
+}
+
+// clampScrollOffset clamps offset to the valid range [0, totalLines-viewportHeight].
+func clampScrollOffset(offset, totalLines, viewportHeight int) int {
+	maxOffset := totalLines - viewportHeight
+	if maxOffset < 0 {
+		maxOffset = 0
+	}
+	if offset > maxOffset {
+		return maxOffset
+	}
+	if offset < 0 {
+		return 0
+	}
+	return offset
 }

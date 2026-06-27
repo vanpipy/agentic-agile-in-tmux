@@ -71,8 +71,10 @@ func (m *Model) handleSessionPickerMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// Filter is applied client-side (already filtered set is in
-	// filteredPickerSessions). Use Enter to select, Esc to cancel.
+	// Filter is applied client-side via filteredPickerSessions() — the
+	// function recomputes the filter from m.pickerSessions on each call.
+	// Pickers stay under ~1000 sessions in practice, so O(n) per keystroke
+	// is fine. Use Enter to select, Esc to cancel.
 	switch msg.String() {
 	case "esc", "ctrl+g":
 		m.mode = ModeNormal
