@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -230,6 +231,182 @@ func TestSave_CreatesDirectory(t *testing.T) {
 
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
 		t.Error("Save() should create nested directories")
+	}
+}
+
+// TestSave_Atomic_NoTempFileLeftOver pins the atomic-write contract from
+// Cluster B.1: Save() must use the tmp+rename pattern (matching tickets.go
+// and store.go), and must NOT leave a `.tmp` file on disk after success.
+//
+// CRASH SCENARIO: without atomic rename, an interrupted Save() (e.g., awp
+// crashes mid-write) leaves config.json in a partial state, losing the user's
+// settings. With tmp+rename, the rename is atomic on POSIX — readers either
+// see the old file or the new file, never a half-written one.
+//
+// CORRECT-7 self-check:
+//   C-onformance: file existence is binary (stat returns no error or IsNotExist)
+//   O-rdering: N/A (single Save call)
+//   R-ange: N/A
+//   R-eference: filesystem only
+//   E-xistence: tmp file must NOT exist; dest file MUST exist
+//   C-ardinality: 0 tmp files expected; 1 dest file expected
+//   T-ime: no time concerns
+func TestSave_Atomic_NoTempFileLeftOver(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.json")
+	tmpPath := configPath + ".tmp"
+
+	cfg := DefaultConfig()
+	cfg.UI.Theme = "atom-test"
+
+	if err := cfg.Save(configPath); err != nil {
+		t.Fatalf("Save() error: %v", err)
+	}
+
+	// The tmp file must NOT exist after a successful Save.
+	if _, err := os.Stat(tmpPath); err == nil {
+		t.Errorf("Save() left tmp file at %s; expected atomic tmp+rename pattern.\n"+
+			"Cluster B.1: without tmp+rename, an interrupted Save() can leave the destination\n"+
+			"file in a partial state, losing the user's settings.", tmpPath)
+	} else if !os.IsNotExist(err) {
+		t.Errorf("unexpected stat error for %s: %v", tmpPath, err)
+	}
+
+	// The destination file MUST exist and contain the saved config.
+	if _, err := os.Stat(configPath); err != nil {
+		t.Fatalf("destination file missing after Save(): %v", err)
+	}
+
+	loaded, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if loaded.UI.Theme != "atom-test" {
+		t.Errorf("loaded.UI.Theme = %q; want %q", loaded.UI.Theme, "atom-test")
+	}
+}
+
+// TestSave_Atomic_CleansTmpOnFailure pins the contract that a failed Save()
+// removes the tmp file. Without cleanup, repeated failed saves accumulate
+// orphaned config.json.tmp files in the user's config dir.
+//
+// This test makes Save() fail by pre-creating the destination as a directory.
+// The atomic-rename Save() will:
+//   1. Successfully write to config.json.tmp
+//   2. Fail at rename() because the dest is a directory
+//   3. (Contract) clean up the tmp file
+//
+// CORRECT-7 self-check:
+//   C-onformance: tmp file must NOT exist after failed Save
+//   O-rdering: N/A
+//   R-ange: N/A
+//   R-eference: filesystem only
+//   E-xistence: tmp file must NOT exist
+//   C-ardinality: 0 tmp files expected
+//   T-ime: no time concerns
+func TestSave_Atomic_CleansTmpOnFailure(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.json")
+	tmpPath := configPath + ".tmp"
+
+	// Make the destination path fail-rename: replace it with a directory
+	// of the same name. The atomic-rename Save() will write tmp then fail
+	// at rename because the target is a non-empty dir.
+	if err := os.Mkdir(configPath, 0755); err != nil {
+		t.Fatalf("mkdir-as-config: %v", err)
+	}
+
+	cfg := DefaultConfig()
+	saveErr := cfg.Save(configPath)
+	if saveErr == nil {
+		// Save succeeded? Then rename worked, meaning the dir was empty
+		// or didn't block rename. This is OS-dependent. Skip the assertion.
+		t.Skip("Save unexpectedly succeeded; this test requires rename-failure semantics")
+	}
+
+	// The tmp file must be cleaned up after failed Save.
+	if _, err := os.Stat(tmpPath); err == nil {
+		t.Errorf("Save() left tmp file at %s after rename failure; tmp must be cleaned up.\n"+
+			"Cluster B.1: rename failure must trigger tmp cleanup to avoid orphan accumulation.", tmpPath)
+	}
+}
+
+// TestConfigGo_UsesAtomicWrite pins the source-level contract: Save() must
+// use the tmp+rename pattern (matching tickets.go and store.go). Structural
+// test that catches the regression of reverting to direct os.WriteFile.
+//
+// CORRECT-7 self-check:
+//   C-onformance: literal substrings must all be present
+//   O-rdering: N/A
+//   R-ange: N/A
+//   R-eference: source-file scan only
+//   E-xistence: substrings must exist
+//   C-ardinality: 1 occurrence of each expected
+//   T-ime: no time concerns
+func TestConfigGo_UsesAtomicWrite(t *testing.T) {
+	src := readConfigGoSource(t)
+	checks := []struct {
+		pattern string
+		why     string
+	}{
+		{"tmpPath := path + \".tmp\"", "must write to a tmp file before rename"},
+		{"os.WriteFile(tmpPath, data, 0644)", "tmp file must be written via WriteFile"},
+		{"os.Rename(tmpPath, path)", "tmp file must be atomically renamed to dest"},
+	}
+	for _, c := range checks {
+		if !strings.Contains(src, c.pattern) {
+			line := findConfigLineNumber(src, c.pattern)
+			t.Errorf("config.go:%d missing required pattern %q (%s).\n"+
+				"Cluster B.1: Save() must use tmp+rename for atomic write.\n"+
+				"Match the pattern in internal/project/tickets.go:Save() or internal/project/store.go:Save().",
+				line, c.pattern, c.why)
+		}
+	}
+
+	// Negative check: Save() must NOT use os.WriteFile directly on the dest path.
+	// (Allow the tmpPath form, just not the bare path.)
+	if strings.Contains(src, "return os.WriteFile(path, data, 0644)") {
+		t.Errorf("config.go Save() uses direct os.WriteFile on dest path; "+
+			"this is non-atomic and can leave config.json truncated on crash.\n"+
+			"Cluster B.1: use the tmp+rename pattern instead.")
+	}
+}
+
+// --- helpers (config-specific) ---
+
+func readConfigGoSource(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(findConfigProjectRoot(t), "internal", "config", "config.go")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return string(data)
+}
+
+func findConfigLineNumber(src, substr string) int {
+	idx := strings.Index(src, substr)
+	if idx < 0 {
+		return 0
+	}
+	return strings.Count(src[:idx], "\n") + 1
+}
+
+func findConfigProjectRoot(t *testing.T) string {
+	t.Helper()
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			t.Fatalf("go.mod not found above %s", dir)
+		}
+		dir = parent
 	}
 }
 

@@ -203,7 +203,11 @@ func (c *Config) GetTheme() Theme {
 	return GetTheme(c.UI.Theme, c.UI.CustomColors)
 }
 
-// Save writes configuration to file
+// Save writes configuration to file using the atomic tmp+rename pattern.
+// On crash mid-write, the destination file is left intact (rename is atomic
+// on POSIX). This matches the pattern in internal/project/tickets.go:Save()
+// and internal/project/store.go:Save() — see Cluster B.1 of the 2026-06-27
+// audit for context.
 func (c *Config) Save(path string) error {
 	if path == "" {
 		var err error
@@ -223,7 +227,17 @@ func (c *Config) Save(path string) error {
 		return err
 	}
 
-	return os.WriteFile(path, data, 0644)
+	tmpPath := path + ".tmp"
+	if err := os.WriteFile(tmpPath, data, 0644); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		// Clean up the orphaned tmp file so repeated failed saves don't
+		// accumulate debris in the user's config dir.
+		os.Remove(tmpPath)
+		return err
+	}
+	return nil
 }
 
 // LoadWithValidation loads config and returns structured validation result
