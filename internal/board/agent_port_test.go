@@ -10,6 +10,9 @@
 package board
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"strings"
@@ -32,61 +35,33 @@ import (
 //   T-ime: no time concerns
 func TestBoardGo_NoAgentPortField(t *testing.T) {
 	src := readBoardGoSource(t)
-	codeOnly := stripComments(src)
-	if strings.Contains(codeOnly, "AgentPort") {
-		line := agentPortLineNumber(codeOnly)
-		t.Errorf("board.go:%d still uses Ticket.AgentPort outside of a comment.\n"+
+	if hasIdentifier(src, "AgentPort") {
+		t.Errorf("board.go still uses identifier 'AgentPort' outside of a comment.\n"+
 			"M7: this field is multi-agent residue with ZERO readers.\n"+
-			"Remove it. (References inside comments are fine for documentation.)",
-			line)
+			"Remove it. (References inside comments are fine for documentation.)")
 	}
 }
 
-// stripComments removes // line comments and /* */ block comments from
-// Go source code. Returns the code body without comments.
-func stripComments(src string) string {
-	var result strings.Builder
-	i := 0
-	for i < len(src) {
-		// Line comment
-		if i+1 < len(src) && src[i] == '/' && src[i+1] == '/' {
-			// Skip until end of line
-			for i < len(src) && src[i] != '\n' {
-				i++
-			}
-			continue
-		}
-		// Block comment
-		if i+1 < len(src) && src[i] == '/' && src[i+1] == '*' {
-			i += 2
-			for i+1 < len(src) && !(src[i] == '*' && src[i+1] == '/') {
-				i++
-			}
-			i += 2
-			continue
-		}
-		// String literal — preserve (don't strip // inside strings)
-		if src[i] == '"' {
-			result.WriteByte(src[i])
-			i++
-			for i < len(src) && src[i] != '"' {
-				if src[i] == '\\' && i+1 < len(src) {
-					result.WriteByte(src[i])
-					i++
-				}
-				result.WriteByte(src[i])
-				i++
-			}
-			if i < len(src) {
-				result.WriteByte(src[i])
-				i++
-			}
-			continue
-		}
-		result.WriteByte(src[i])
-		i++
+// hasIdentifier reports whether src contains the Go identifier name
+// outside of comments. Uses go/parser AST walk so it correctly handles
+// string literals, raw strings, and multi-line comments.
+func hasIdentifier(src, name string) bool {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "test.go", src, parser.ParseComments)
+	if err != nil {
+		// Fall back to substring search on parse error — better than
+		// false-positive test failure.
+		return strings.Contains(src, name)
 	}
-	return result.String()
+	found := false
+	ast.Inspect(file, func(n ast.Node) bool {
+		if id, ok := n.(*ast.Ident); ok && id.Name == name {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
 }
 
 // TestNoAgentPortAnywhere extends the check to ALL .go files in the repo.
@@ -127,7 +102,7 @@ func TestNoAgentPortAnywhere(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		if strings.Contains(stripComments(string(data)), "AgentPort") {
+		if hasIdentifier(string(data), "AgentPort") {
 			violations = append(violations, relPath)
 		}
 		return nil
@@ -144,13 +119,5 @@ func TestNoAgentPortAnywhere(t *testing.T) {
 }
 
 // --- helpers ---
-
-func agentPortLineNumber(src string) int {
-	idx := strings.Index(src, "AgentPort")
-	if idx < 0 {
-		return 0
-	}
-	return strings.Count(src[:idx], "\n") + 1
-}
 
 // readBoardGoSource is defined in transition_test.go (shared).
