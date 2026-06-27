@@ -111,22 +111,10 @@ func (m *Model) renderHeader() string {
 
 	left := lipgloss.JoinHorizontal(lipgloss.Center, logo, "  ", filterSection, "  ", stats)
 
-	for ticketID, pane := range m.panes {
-		if !pane.Running() {
-			continue
-		}
-		ticket, _ := m.globalStore.Get(ticketID)
-		if ticket == nil {
-			continue
-		}
-
-	}
-
 	helpStyle := lipgloss.NewStyle().Foreground(m.colors.muted)
 	help := helpStyle.Render("? help  q quit")
 
 	right := help
-	right = help
 
 	spacing := m.width - lipgloss.Width(left) - lipgloss.Width(right)
 	spacing = max(spacing, 0)
@@ -669,9 +657,6 @@ func (m *Model) renderShuttingDown() string {
 
 func (m *Model) renderSpawning() string {
 	agentName := "pi"
-	if agentName == "" {
-		agentName = "agent"
-	}
 
 	titleStyle := lipgloss.NewStyle().
 		Foreground(m.colors.success).

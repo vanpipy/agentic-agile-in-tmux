@@ -4,13 +4,13 @@
 package app
 
 import (
-		"fmt"
+	"fmt"
 	"os"
 	"path/filepath"
 
-				"github.com/pi/awp/internal/config"
+	"github.com/pi/awp/internal/config"
 	"github.com/pi/awp/internal/project"
-	)
+)
 
 // Run is the legacy Phase 0 entry point.
 func Run(_ *config.Config, _ string, _ string) error {
@@ -102,4 +102,3 @@ func DeleteProject(nameOrID string) error {
 	fmt.Printf("Deleted project '%s' (%s)\n", target.Name, target.RepoPath)
 	return nil
 }
-
