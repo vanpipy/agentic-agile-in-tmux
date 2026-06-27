@@ -302,72 +302,92 @@ type ExitFocusMsg struct{}
 
 // Start initializes the pane's vt10x state. Phase 7 refactor:
 // Pane no longer owns the command process by default. Pass a
-// non-empty command for legacy mode (still spawns its own PTY).
-// Otherwise the caller feeds output via HandleOutput.
+// Start initializes the pane's vt10x state and returns a tea.Cmd for the
+// read loop. Deprecated: prefer StartCmd which runs setup synchronously.
 //
-// This lets PiClient own the pi process (for RPC parsing) while
-// Pane handles the visual rendering.
+// Start retains the IIFE pattern for backward compatibility, but this
+// means Start's setup runs on Bubble Tea's goroutine, racing with
+// consumer goroutines spawned by installCallbacks. New code should use
+// StartCmd; Start is preserved for tests that exercise the render-only
+// path (command=="") without consumer goroutines.
+//
+// For render-only mode (command==""): no PTY is started, no consumer
+// goroutines — this path is race-free.
 func (p *Pane) Start(command string, args ...string) tea.Cmd {
 	return func() tea.Msg {
-		p.mu.Lock()
-		defer p.mu.Unlock()
-
-		// Build command
-		p.cmd = exec.Command(command, args...)
-		p.cmd.Env = buildCleanEnv(p.sessionName)
-
-		// Set working directory if specified
-		if p.workdir != "" {
-			p.cmd.Dir = p.workdir
-		}
-
-		// awp: empty command = render-only mode (HandleOutput from
-		// PiClient/PiPane). Phase 7/8 design — the upstream pattern
-		// always runs a command; we add a render-only path.
-		if command == "" {
-			// Render-only mode: vt emulator without spawning PTY.
-			// Concurrency handled by p.mu (held by caller).
-			p.vt = vt.NewEmulator(p.width, p.height)
-			p.vt.SetScrollbackSize(p.scrollbackSize)
-			p.running = true
-			// Render-only path: install callback here since no consumer
-			// goroutine will be spawned (no installCallbacks called). This
-			// path is for tests + PiClient render-only mode; production
-			// code uses StartCmd which calls installCallbacks.
-			p.installAltScreenCallback()
+		readLoop := p.startSetup(command, args...)
+		if readLoop == nil {
 			return nil
 		}
+		return readLoop()
+	}
+}
 
-		// Start PTY first so we can use it as vt10x writer
-		ptmx, err := pty.Start(p.cmd)
-		if err != nil {
-			p.exitErr = err
-			return ExitMsg{PaneID: p.id, Err: err}
-		}
-		p.pty = ptmx
-		p.running = true
-		p.exitErr = nil
+// startSetup performs the synchronous initialization (command setup, PTY
+// start, vt emulator creation, alt-screen callback registration) and
+// returns a tea.Cmd for the read loop. Returns nil for the render-only
+// path (command=="") where there is no PTY to read from.
+//
+// Called by Start (via IIFE) and StartCmd (synchronously before
+// installCallbacks). Synchronous invocation is required by StartCmd
+// because installCallbacks spawns the inputDrain goroutine, which reads
+// p.vt; the assignment must happen-before the goroutine starts.
+//
+// This split fixes the pre-existing race in pane.go:330 (Start IIFE
+// writing p.vt) vs pane.go:424 (inputDrain reading p.vt).
+func (p *Pane) startSetup(command string, args ...string) tea.Cmd {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 
-		// Set PTY size
-		pty.Setsize(p.pty, &pty.Winsize{
-			Rows: uint16(p.height),
-			Cols: uint16(p.width),
-		})
+	// Build command
+	p.cmd = exec.Command(command, args...)
+	p.cmd.Env = buildCleanEnv(p.sessionName)
 
-		// Create virtual terminal. Output responses go to PTY (so the
-		// child can read DSR/etc queries). Concurrency via p.mu.
+	// Set working directory if specified
+	if p.workdir != "" {
+		p.cmd.Dir = p.workdir
+	}
+
+	// awp: empty command = render-only mode (HandleOutput from
+	// PiClient/PiPane). Phase 7/8 design.
+	if command == "" {
+		// Render-only mode: vt emulator without spawning PTY.
 		p.vt = vt.NewEmulator(p.width, p.height)
 		p.vt.SetScrollbackSize(p.scrollbackSize)
-		// NOTE: do NOT call installAltScreenCallback here. StartCmd
-		// synchronously calls installCallbacks which is the single owner
-		// of p.altScreenActiveCh + altScreenConsumer in the PTY path.
-		// Calling installAltScreenCallback here too would race with the
-		// consumer reading p.altScreenActiveCh (see Cluster D.2 follow-up).
-		// scrollback + selection already initialized in New()
-
-		// Start read loop
-		return p.readOutputUnlocked()()
+		p.running = true
+		// Render-only path: install callback here since no consumer
+		// goroutine will be spawned. Tests + PiClient render-only use this.
+		p.installAltScreenCallback()
+		return nil
 	}
+
+	// Start PTY first so we can use it as vt10x writer
+	ptmx, err := pty.Start(p.cmd)
+	if err != nil {
+		p.exitErr = err
+		return func() tea.Msg { return ExitMsg{PaneID: p.id, Err: err} }
+	}
+	p.pty = ptmx
+	p.running = true
+	p.exitErr = nil
+
+	// Set PTY size
+	pty.Setsize(p.pty, &pty.Winsize{
+		Rows: uint16(p.height),
+		Cols: uint16(p.width),
+	})
+
+	// Create virtual terminal. Output responses go to PTY (so the
+	// child can read DSR/etc queries).
+	p.vt = vt.NewEmulator(p.width, p.height)
+	p.vt.SetScrollbackSize(p.scrollbackSize)
+	// NOTE: do NOT call installAltScreenCallback here. installCallbacks
+	// (called next from StartCmd) is the single owner of
+	// p.altScreenActiveCh + altScreenConsumer.
+	// scrollback + selection already initialized in New()
+
+	// Return read-loop cmd; it runs on Bubble Tea's goroutine.
+	return p.readOutputUnlocked()
 }
 
 // installCallbacks installs observers on the x/vt emulator and
@@ -1647,7 +1667,7 @@ func buildCleanEnv(sessionName string) []string {
 // Synchronous installCallbacks() is safe here because it doesn't take
 // p.mu (it spawns a goroutine that takes p.mu per-event).
 func (p *Pane) StartCmd(command string, args ...string) tea.Cmd {
-	cmd := p.Start(command, args...)
+	readLoop := p.startSetup(command, args...)
 	p.installCallbacks()
-	return cmd
+	return readLoop
 }
