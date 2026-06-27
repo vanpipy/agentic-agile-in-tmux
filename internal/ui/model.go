@@ -925,7 +925,6 @@ func (m *Model) dropTicket() (tea.Model, tea.Cmd) {
 		}
 	}
 
-	m.globalStore.Move(ticket.ID, targetStatus)
 	if err := m.globalStore.Move(ticket.ID, targetStatus); err != nil {
 		m.notify("Move rejected: " + err.Error())
 		m.dragging = false
@@ -2317,7 +2316,6 @@ func (m *Model) quickMoveTicket() (tea.Model, tea.Cmd) {
 		}
 	}
 
-	m.globalStore.Move(ticket.ID, nextStatus)
 	if err := m.globalStore.Move(ticket.ID, nextStatus); err != nil {
 		m.notify("Move rejected: " + err.Error())
 		return m, nil
@@ -2341,7 +2339,6 @@ func (m *Model) quickMoveTicketBackward() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	m.globalStore.Move(ticket.ID, prevStatus)
 	if err := m.globalStore.Move(ticket.ID, prevStatus); err != nil {
 		m.notify("Move rejected: " + err.Error())
 		return m, nil
