@@ -44,15 +44,31 @@ type SessionInfo struct {
 //
 // Default location: ~/.pi/agent/sessions/{encoded-cwd}/*.jsonl
 type SessionStore struct {
-	agentDir   string // defaults to ~/.pi/agent
+	mu          sync.Mutex // protects lastSkipped, index, indexed, indexOnce
+	agentDir    string // defaults to ~/.pi/agent
 	lastSkipped int   // count of files skipped during the last List call
 
 	// Lazy index for FindByID. Built on first call; subsequent lookups
-	// are O(1). The index is stale-tolerant: if files are added/removed
-	// after the index is built, FindByID may return stale results. For
-	// one-shot CLI usage this is fine; the TUI uses List(cwd) instead.
+	// are O(1).
+	//
+	// Staleness contract (DEATH-1): the index is built ONCE via sync.Once
+	// and never refreshed. If sessions are added/removed after the first
+	// FindByID call, the index may return stale results.
+	//
+	// Why this is acceptable:
+	//   - CLI use case: store is created, FindByID called once, store
+	//     discarded. Stale state doesn't matter — process exits.
+	//   - TUI use case: TUI uses List(cwd), not FindByID, so the index
+	//     is never built.
+	//   - Tests: each test creates a fresh store.
+	//
+	// For long-running processes that mix FindByID with external writes,
+	// call Invalidate() to rebuild the index.
 	indexOnce sync.Once
-	index     map[string]string // session ID (stem of .jsonl) → full path
+	index     map[string]string // nil until built; non-nil after buildIndex runs
+	// indexed signals whether buildIndex has completed. Useful for
+	// callers that want to know if FindByID results came from the index.
+	indexed bool
 }
 
 // NewSessionStore creates a SessionStore. agentDir is the path to
@@ -355,8 +371,25 @@ func (s *SessionStore) FindByID(id string) (SessionInfo, bool) {
 	return SessionInfo{}, false
 }
 
-// buildIndex populates s.index by walking every sessions/<encoded-cwd>/
-// subdir. Called once via sync.Once on first FindByID.
+// Invalidate forces the next FindByID to rebuild the index. Useful for
+// long-running processes where files may have been added/removed since
+// the first call. Most callers (CLI, TUI) don't need this.
+func (s *SessionStore) Invalidate() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.index = nil
+	s.indexed = false
+	s.indexOnce = sync.Once{}
+}
+
+// IsIndexed reports whether the lazy index has been built. Useful for
+// tests and for callers that want to know if FindByID is fast (indexed)
+// or slow (will trigger a build on next call).
+func (s *SessionStore) IsIndexed() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.indexed
+}
 //
 // CASTRATION-2 from post-P3P4 audit: defensively verify root is under
 // the user's HOME before walking. A symlinked agentDir could otherwise
@@ -365,6 +398,7 @@ func (s *SessionStore) FindByID(id string) (SessionInfo, bool) {
 // in-depth.
 func (s *SessionStore) buildIndex() {
 	s.index = make(map[string]string)
+	s.indexed = true
 	root := s.sessionsDir()
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
