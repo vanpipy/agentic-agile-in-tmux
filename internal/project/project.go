@@ -6,7 +6,7 @@ import (
 	"github.com/google/uuid"
 )
 
-// Project represents a git repository registered with OpenKanban.
+// Project represents a git repository registered with awp.
 // Each git repo is exactly one Project - this is the fundamental unit of organization.
 type Project struct {
 	ID          string    `json:"id"`

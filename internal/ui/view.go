@@ -88,7 +88,7 @@ func (m *Model) renderHeader() string {
 	logo := lipgloss.NewStyle().
 		Foreground(m.colors.primary).
 		Bold(true).
-		Render("◈ OpenKanban")
+		Render("◈ awp")
 
 	var filterSection string
 	if m.mode == ModeFilter {

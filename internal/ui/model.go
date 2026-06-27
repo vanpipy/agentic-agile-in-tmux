@@ -1602,9 +1602,15 @@ type settingsField struct {
 	description string
 }
 
+// settingsFields lists every toggleable setting shown in the Settings overlay
+// (ModeSettings). Order matters: it's the rendering order in renderSettingsView.
+//
+// Invariants pinned by internal/ui/settings_test.go:
+//   - No "default_agent" row (Pi-only rule per AGENTS.md §3 Rule 1).
+//   - Exactly 8 rows (changes here must update TestSettings_FieldCount).
+//   - All keys are unique (pinned by TestSettings_KeysAreUnique).
 var settingsFields = []settingsField{
 	{"theme", "Theme", "theme", "Color theme for the UI"},
-	{"default_agent", "Default Agent", "agent", "Agent to spawn for new tickets (opencode, claude, aider)"},
 	{"confirm_quit", "Confirm Quit", "toggle", "Prompt before quitting with running agents"},
 	{"branch_prefix", "Branch Prefix", "text", "Prefix for auto-generated branch names (e.g. task/, feature/)"},
 	{"delete_worktree", "Delete Worktree", "toggle", "Remove git worktree when deleting tickets"},
