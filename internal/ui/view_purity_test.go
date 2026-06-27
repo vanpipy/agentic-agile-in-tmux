@@ -85,46 +85,11 @@ func TestRenderTicketForm_IsPure(t *testing.T) {
 }
 
 // truncate is defined in util.go (package-level function).
-// TestComputeFormScrollOffset_KeepsActiveFieldVisible verifies the pure
-// helper's contract: given a viewport size and an active field, the
-// returned offset keeps the active field in view.
+// TestComputeFormScrollOffset_KeepsActiveFieldVisible was REMOVED in
+// DEATH-3 (post-P3P4 audit follow-up): View() no longer auto-scrolls
+// to keep the active field in view (that logic was overriding the user's
+// wheel scroll on every render). The function was deleted; View() now
+// reads m.formScrollOffset directly via clampScrollOffset.
 //
-// CORRECT-7 self-check:
-//   C-onformance: literal offset values
-//   O-rdering: N/A
-//   R-ange: 5+ cases (top/bottom/in-view/no-scroll/unknown)
-//   R-eference: no external deps
-//   E-xistence: missing fields case
-//   C-ardinality: 1 helper, multiple scenarios
-//   T-ime: no time concerns
-func TestComputeFormScrollOffset_KeepsActiveFieldVisible(t *testing.T) {
-	fieldStarts := map[int]int{5: 50}
-	fieldEnds := map[int]int{5: 60}
-	tests := []struct {
-		name           string
-		activeField    int
-		currentOffset  int
-		viewportHeight int
-		totalLines     int
-		wantMin        int
-		wantMax        int
-	}{
-		{"field below viewport scrolls to bottom", 5, 0, 20, 100, 41, 50},
-		{"field above viewport scrolls to top", 5, 80, 20, 100, 50, 50},
-		{"field in view keeps current offset", 5, 45, 20, 100, 45, 45},
-		{"no scroll needed (content fits viewport)", 5, 0, 100, 50, 0, 0},
-		{"unknown field clamps current offset", 99, 200, 20, 100, 80, 80},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := computeFormScrollOffset(
-				tt.activeField, tt.currentOffset,
-				fieldStarts, fieldEnds,
-				tt.viewportHeight, tt.totalLines,
-			)
-			if got < tt.wantMin || got > tt.wantMax {
-				t.Errorf("got %d; want in [%d, %d]", got, tt.wantMin, tt.wantMax)
-			}
-		})
-	}
-}
+// For the clampScrollOffset unit tests, see TestClampScrollOffset in
+// view_clamp_test.go (added separately).

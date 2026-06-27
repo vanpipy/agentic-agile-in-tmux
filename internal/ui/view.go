@@ -875,17 +875,13 @@ func (m *Model) renderTicketForm() string {
 	totalLines := len(lines)
 	needsScroll := totalLines > viewportHeight
 
-	// AGENTS.md §5.3: View() is pure. Compute the effective scroll offset
-	// in a local variable; do NOT mutate m.formScrollOffset here. The
-	// only legitimate writers of m.formScrollOffset are Update() handlers
-	// (Tab/shift+tab to switch fields, mouse wheel for user-driven scroll).
-	// See internal/ui/view_purity_test.go for the regression contract.
-	effectiveOffset := computeFormScrollOffset(
-		m.ticketFormField,
-		m.formScrollOffset,
-		fieldStartLines, fieldEndLines,
-		viewportHeight, totalLines,
-	)
+	// AGENTS.md §5.3: View() is pure. Render strictly from m.formScrollOffset.
+	// Auto-scroll to keep the active field in view is the responsibility
+	// of field-navigation handlers (nextFormField, prevFormField), which
+	// call ensureActiveFieldVisible() to update m.formScrollOffset BEFORE
+	// View() runs again. This way, the user's manual wheel scroll is
+	// never silently overridden on the next render.
+	effectiveOffset := clampScrollOffset(m.formScrollOffset, totalLines, viewportHeight)
 
 	var visibleLines []string
 	scrollIndicatorStyle := lipgloss.NewStyle().Foreground(m.colors.info).Bold(true)
@@ -1846,47 +1842,8 @@ func (m *Model) renderDepBadge(ticket *board.Ticket) string {
 	}
 }
 
-// computeFormScrollOffset is a pure function that returns the scroll
-// offset needed to keep the active ticket-form field visible. It does
-// NOT mutate any state — callers use the return value for rendering.
-//
-// AGENTS.md §5.3: "View() is a pure render of model state, no side
-// effects." This function exists to satisfy that contract.
-//
-// The logic mirrors the previous in-place mutation: if the active
-// field is below the viewport, scroll so it's at the bottom; if
-// above, scroll so it's at the top. If neither, keep the current
-// scroll offset (clamped to valid range).
-func computeFormScrollOffset(
-	activeField int,
-	currentOffset int,
-	fieldStartLines, fieldEndLines map[int]int,
-	viewportHeight, totalLines int,
-) int {
-	if totalLines <= viewportHeight {
-		return 0
-	}
-	startLine, hasStart := fieldStartLines[activeField]
-	endLine, hasEnd := fieldEndLines[activeField]
-	if !hasStart || !hasEnd {
-		return clampScrollOffset(currentOffset, totalLines, viewportHeight)
-	}
-	fieldHeight := endLine - startLine + 1
-	effectiveViewport := viewportHeight - 2
-	if fieldHeight <= effectiveViewport {
-		if endLine >= currentOffset+effectiveViewport {
-			return clampScrollOffset(endLine-effectiveViewport+1, totalLines, viewportHeight)
-		}
-		if startLine < currentOffset {
-			return clampScrollOffset(startLine, totalLines, viewportHeight)
-		}
-		return clampScrollOffset(currentOffset, totalLines, viewportHeight)
-	}
-	// Field is taller than the viewport — pin to its top.
-	return clampScrollOffset(startLine, totalLines, viewportHeight)
-}
-
 // clampScrollOffset clamps offset to the valid range [0, totalLines-viewportHeight].
+// Pure function (no side effects).
 func clampScrollOffset(offset, totalLines, viewportHeight int) int {
 	maxOffset := totalLines - viewportHeight
 	if maxOffset < 0 {
