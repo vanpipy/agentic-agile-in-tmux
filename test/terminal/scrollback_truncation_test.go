@@ -22,7 +22,7 @@ func TestScrollback_NoLineLoss_2LineChunks(t *testing.T) {
 	pane := terminal.New("test", 80, 5, 1000)
 	pane.SetWorkdir(t.TempDir())
 
-	cmd := pane.Start(mockPath)
+	cmd := pane.StartCmd(mockPath)
 	if cmd == nil {
 		t.Fatal("Start nil")
 	}

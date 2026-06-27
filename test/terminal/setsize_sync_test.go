@@ -29,7 +29,7 @@ func TestSetSize_ResizesVTAndPTY(t *testing.T) {
 	pane := terminal.New("test", 100, 24, 1000)
 	pane.SetWorkdir(t.TempDir())
 
-	cmd := pane.Start(mockPath, "--mode", "rpc")
+	cmd := pane.StartCmd(mockPath, "--mode", "rpc")
 	if cmd == nil {
 		t.Fatal("pane.Start returned nil")
 	}

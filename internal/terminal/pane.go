@@ -300,20 +300,35 @@ type ExitFocusMsg struct{}
 
 // --- PTY Lifecycle (Issue #13) ---
 
-// Start initializes the pane's vt10x state. Phase 7 refactor:
-// Pane no longer owns the command process by default. Pass a
-// Start initializes the pane's vt10x state and returns a tea.Cmd for the
-// read loop. Deprecated: prefer StartCmd which runs setup synchronously.
+// Start initializes the pane's vt10x state and returns a tea.Cmd for
+// the read loop.
 //
-// Start retains the IIFE pattern for backward compatibility, but this
-// means Start's setup runs on Bubble Tea's goroutine, racing with
-// consumer goroutines spawned by installCallbacks. New code should use
-// StartCmd; Start is preserved for tests that exercise the render-only
-// path (command=="") without consumer goroutines.
+// **Render-only mode only**: command must be "". For PTY mode use
+// StartCmd, which runs setup synchronously to avoid races with
+// consumer goroutines (altScreenConsumer, inputDrain).
 //
-// For render-only mode (command==""): no PTY is started, no consumer
-// goroutines — this path is race-free.
+// Why render-only only: this function returns an IIFE that runs on
+// Bubble Tea's goroutine. If a non-empty command is passed AND the
+// caller later invokes installCallbacks (e.g. via StartCmd), the IIFE
+// races with the consumer goroutines reading p.vt and
+// p.altScreenActiveCh. The previous "footgun" was that callers using
+// Start("cmd", ...) directly would silently introduce data races.
+//
+// For PTY-mode spawn: use StartCmd.
+// For render-only tests: continue using Start("", nil...).
+//
+// Panics if called with a non-empty command. This is a runtime guard
+// against the footgun where a contributor uses Start in PTY mode and
+// then calls installCallbacks (via StartCmd) — the IIFE inside Start
+// would race with consumer goroutines. Better to fail fast at the
+// boundary than silently introduce a data race.
+//
+// Note: tests that want to drive the IIFE path for inspection can
+// still call the unexported startSetup directly.
 func (p *Pane) Start(command string, args ...string) tea.Cmd {
+	if command != "" {
+		panic("terminal.Pane.Start() is render-only. Use StartCmd() for PTY mode.")
+	}
 	return func() tea.Msg {
 		readLoop := p.startSetup(command, args...)
 		if readLoop == nil {

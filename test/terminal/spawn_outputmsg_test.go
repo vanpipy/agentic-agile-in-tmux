@@ -29,7 +29,7 @@ func TestSpawn_TriggersOutputMsg(t *testing.T) {
 
 	// Start should return a Cmd that produces OutputMsg
 	// (Pane.Start returns p.readOutputUnlocked()())
-	cmd := pane.Start(mockPath, "--mode", "rpc")
+	cmd := pane.StartCmd(mockPath, "--mode", "rpc")
 	if cmd == nil {
 		t.Fatal("Pane.Start returned nil — no Cmd to trigger OutputMsg")
 		t.FailNow()

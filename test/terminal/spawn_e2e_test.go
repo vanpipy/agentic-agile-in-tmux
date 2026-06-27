@@ -28,7 +28,7 @@ func TestSpawn_EndToEnd(t *testing.T) {
 	pane.SetWorkdir(t.TempDir())
 
 	// Drive the readOutput self-cycle
-	cmd := pane.Start(mockPath, "--mode", "rpc")
+	cmd := pane.StartCmd(mockPath, "--mode", "rpc")
 	if cmd == nil {
 		t.Fatal("pane.Start returned nil — should return readOutput Cmd")
 	}

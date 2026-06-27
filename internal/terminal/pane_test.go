@@ -45,12 +45,13 @@ func TestPane_Start_NoCommand(t *testing.T) {
 }
 
 func TestPane_Start_WithCommand(t *testing.T) {
-	// Pane.Start returns a tea.Cmd. Invoking it actually exec's
-	// the command and starts the read loop.
+	// Pane.StartCmd returns a tea.Cmd. Invoking it actually exec's
+// the command and starts the read loop. (Migrated from Start → StartCmd
+// to avoid the Start-in-PTY-mode footgun.)
 	p := New("test", 80, 24, 100)
-	cmd := p.Start("echo", "hello")
+	cmd := p.StartCmd("echo", "hello")
 	if cmd == nil {
-		t.Fatal("Start should return a tea.Cmd")
+		t.Fatal("StartCmd should return a tea.Cmd")
 	}
 	cmd() // exec the command
 	defer p.Stop()

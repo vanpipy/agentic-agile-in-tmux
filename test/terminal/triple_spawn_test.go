@@ -24,7 +24,7 @@ func TestTripleSpawnPi_ManyTimes(t *testing.T) {
 		t.Run("iteration", func(t *testing.T) {
 			pane := terminal.New("iter", 80, 24, 0)
 			pane.SetWorkdir(t.TempDir())
-			cmd := pane.Start(piPath, "--help")
+			cmd := pane.StartCmd(piPath, "--help")
 			if cmd == nil {
 				t.Fatal("Start nil")
 			}
