@@ -57,13 +57,18 @@ type SessionStore struct {
 
 // NewSessionStore creates a SessionStore. agentDir is the path to
 // pi's agent directory (contains the `sessions/` subdir). If empty,
-// defaults to ~/.pi/agent.
-func NewSessionStore(agentDir string) *SessionStore {
+// defaults to ~/.pi/agent — but if home detection fails, returns an
+// error rather than silently producing a relative path that could
+// clobber the user's CWD.
+func NewSessionStore(agentDir string) (*SessionStore, error) {
 	if agentDir == "" {
-		home, _ := os.UserHomeDir()
+		home, err := os.UserHomeDir()
+		if err != nil || home == "" {
+			return nil, fmt.Errorf("cannot determine home directory for pi agent path (set $HOME or pass agentDir explicitly): %w", err)
+		}
 		agentDir = filepath.Join(home, ".pi", "agent")
 	}
-	return &SessionStore{agentDir: agentDir}
+	return &SessionStore{agentDir: agentDir}, nil
 }
 
 // sessionsDir returns the path to the sessions/ subdir.

@@ -49,10 +49,16 @@ func (m *Model) openSessionPicker() tea.Cmd {
 // Reuses pi.NewSessionStore with the user's HOME (default).
 func (m *Model) scanSessionsCmd() tea.Cmd {
 	home, _ := os.UserHomeDir()
-	store := pi.NewSessionStore(home)
+	store, err := pi.NewSessionStore(home)
+	if err != nil {
+		// Home detection failed: surface as a load error in the picker.
+		return func() tea.Msg {
+			return sessionsLoadedMsg{err: err}
+		}
+	}
 	return func() tea.Msg {
-		sessions, err := store.List(home)
-		return sessionsLoadedMsg{sessions: sessions, err: err}
+		sessions, lerr := store.List(home)
+		return sessionsLoadedMsg{sessions: sessions, err: lerr}
 	}
 }
 

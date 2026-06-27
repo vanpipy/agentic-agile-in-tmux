@@ -43,7 +43,10 @@ func writeSessionJSONL(t *testing.T, dir, id, cwd string, lines []map[string]any
 
 func TestSessionInfo_ToolCount_Phase3(t *testing.T) {
 	dir := t.TempDir()
-	store := NewSessionStore(dir)
+	store, err := NewSessionStore(dir)
+	if err != nil {
+		t.Fatalf("NewSessionStore: %v", err)
+	}
 	sessionDir := filepath.Join(dir, "sessions", "--tmp--")
 	writeSessionJSONL(t, sessionDir, "sess-tools", "/tmp", []map[string]any{
 		{"type": "model_change", "provider": "anthropic", "modelId": "claude-opus-4"},
@@ -72,7 +75,10 @@ func TestSessionInfo_ToolCount_Phase3(t *testing.T) {
 
 func TestSessionStore_FindByID_Full(t *testing.T) {
 	dir := t.TempDir()
-	store := NewSessionStore(dir)
+	store, err := NewSessionStore(dir)
+	if err != nil {
+		t.Fatalf("NewSessionStore: %v", err)
+	}
 	sessionDir := filepath.Join(dir, "sessions", "--home-x--")
 	writeSessionJSONL(t, sessionDir, "abc-123-uuid", "/home/x", []map[string]any{
 		{"type": "message", "message": map[string]any{"role": "user", "content": "hi"}},
@@ -88,7 +94,10 @@ func TestSessionStore_FindByID_Full(t *testing.T) {
 
 func TestSessionStore_FindByID_Prefix(t *testing.T) {
 	dir := t.TempDir()
-	store := NewSessionStore(dir)
+	store, err := NewSessionStore(dir)
+	if err != nil {
+		t.Fatalf("NewSessionStore: %v", err)
+	}
 	sessionDir := filepath.Join(dir, "sessions", "--home-y--")
 	writeSessionJSONL(t, sessionDir, "deadbeef-0000", "/home/y", nil)
 	// Prefix match
@@ -103,7 +112,10 @@ func TestSessionStore_FindByID_Prefix(t *testing.T) {
 
 func TestSessionStore_FindByID_NotFound(t *testing.T) {
 	dir := t.TempDir()
-	store := NewSessionStore(dir)
+	store, err := NewSessionStore(dir)
+	if err != nil {
+		t.Fatalf("NewSessionStore: %v", err)
+	}
 	if _, ok := store.FindByID("nonexistent"); ok {
 		t.Fatal("expected not found")
 	}
@@ -111,7 +123,10 @@ func TestSessionStore_FindByID_NotFound(t *testing.T) {
 
 func TestSessionInfo_FirstAndLastPrompt(t *testing.T) {
 	dir := t.TempDir()
-	store := NewSessionStore(dir)
+	store, err := NewSessionStore(dir)
+	if err != nil {
+		t.Fatalf("NewSessionStore: %v", err)
+	}
 	sessionDir := filepath.Join(dir, "sessions", "--tmp--")
 	writeSessionJSONL(t, sessionDir, "sess-prompts", "/tmp", []map[string]any{
 		{"type": "message", "message": map[string]any{"role": "user", "content": "first question"}},
@@ -137,7 +152,10 @@ func TestSessionInfo_FirstAndLastPrompt(t *testing.T) {
 // maxScanLines (200) — not 1000.
 func TestParseSessionInfo_BoundedScan(t *testing.T) {
 	dir := t.TempDir()
-	store := NewSessionStore(dir)
+	store, err := NewSessionStore(dir)
+	if err != nil {
+		t.Fatalf("NewSessionStore: %v", err)
+	}
 	sessionDir := filepath.Join(dir, "sessions", "--tmp--")
 
 	var lines []map[string]any
@@ -168,7 +186,10 @@ func TestParseSessionInfo_BoundedScan(t *testing.T) {
 // to a later entry's timestamp (not just the header time).
 func TestParseSessionInfo_LastActivity(t *testing.T) {
 	dir := t.TempDir()
-	store := NewSessionStore(dir)
+	store, err := NewSessionStore(dir)
+	if err != nil {
+		t.Fatalf("NewSessionStore: %v", err)
+	}
 	sessionDir := filepath.Join(dir, "sessions", "--tmp--")
 	writeSessionJSONL(t, sessionDir, "la-test", "/tmp", []map[string]any{
 		{"type": "message", "time": "2026-06-17T10:00:00Z",
@@ -197,7 +218,10 @@ func TestParseSessionInfo_LastActivity(t *testing.T) {
 // the count of files that failed to parse.
 func TestSessionStore_ListSkipped(t *testing.T) {
 	dir := t.TempDir()
-	store := NewSessionStore(dir)
+	store, err := NewSessionStore(dir)
+	if err != nil {
+		t.Fatalf("NewSessionStore: %v", err)
+	}
 	sessionDir := filepath.Join(dir, "sessions", "--tmp--")
 
 	// 1 good file
@@ -214,7 +238,7 @@ func TestSessionStore_ListSkipped(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err := store.List("/tmp")
+	_, err = store.List("/tmp")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -240,7 +264,10 @@ func TestSessionStore_Read(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	store := NewSessionStore(tmp)
+	store, err := NewSessionStore(tmp)
+	if err != nil {
+		t.Fatalf("NewSessionStore: %v", err)
+	}
 	got, err := store.Read(sessFile)
 	if err != nil {
 		t.Fatalf("Read: %v", err)
@@ -256,8 +283,11 @@ func TestSessionStore_Read(t *testing.T) {
 func TestSessionStore_Read_NotFound(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("PI_AGENT_DIR", tmp)
-	store := NewSessionStore(tmp)
-	_, err := store.Read("/nonexistent/file.jsonl")
+	store, err := NewSessionStore(tmp)
+	if err != nil {
+		t.Fatalf("NewSessionStore: %v", err)
+	}
+	_, err = store.Read("/nonexistent/file.jsonl")
 	if err == nil {
 		t.Error("Read of nonexistent should error")
 	}
@@ -279,7 +309,10 @@ func TestSessionStore_FindByID(t *testing.T) {
 		}
 	}
 
-	store := NewSessionStore(tmp)
+	store, err := NewSessionStore(tmp)
+	if err != nil {
+		t.Fatalf("NewSessionStore: %v", err)
+	}
 	got, ok := store.FindByID("def-456")
 	if !ok {
 		t.Fatal("FindByID should find def-456")

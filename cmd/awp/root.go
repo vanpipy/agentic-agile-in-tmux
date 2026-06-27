@@ -226,7 +226,10 @@ var sessionListCmd = &cobra.Command{
 				return fmt.Errorf("get current directory: %w", err)
 			}
 		}
-		store := pi.NewSessionStore("")
+		store, err := pi.NewSessionStore("")
+		if err != nil {
+			return err
+		}
 		sessions, err := store.List(cwd)
 		if err != nil {
 			return err
@@ -265,7 +268,10 @@ var sessionShowCmd = &cobra.Command{
 	Short: "Print details of a session",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		store := pi.NewSessionStore("")
+		store, err := pi.NewSessionStore("")
+		if err != nil {
+			return err
+		}
 		info, ok := store.FindByID(args[0])
 		if !ok {
 			return fmt.Errorf("session not found: %s", args[0])
@@ -300,7 +306,10 @@ var sessionResumeCmd = &cobra.Command{
 	Short: "Start awp with the given session resumed",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		store := pi.NewSessionStore("")
+		store, err := pi.NewSessionStore("")
+		if err != nil {
+			return err
+		}
 		info, ok := store.FindByID(args[0])
 		if !ok {
 			return fmt.Errorf("session not found: %s", args[0])
@@ -325,7 +334,10 @@ var sessionForkCmd = &cobra.Command{
 	Short: "Create a new ticket that resumes a session (in a fresh worktree)",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		store := pi.NewSessionStore("")
+		store, err := pi.NewSessionStore("")
+		if err != nil {
+			return err
+		}
 		info, ok := store.FindByID(args[0])
 		if !ok {
 			return fmt.Errorf("session not found: %s", args[0])

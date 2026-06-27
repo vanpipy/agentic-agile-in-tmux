@@ -23,7 +23,10 @@ func TestFindByID_BuildsIndexOnFirstCall(t *testing.T) {
 	tmpDir := t.TempDir()
 	writeFakeSessionFile(t, tmpDir, "--fake--", "fake-uuid-1234567890ab")
 
-	store := NewSessionStore(tmpDir)
+	store, err := NewSessionStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewSessionStore: %v", err)
+	}
 
 	// First call: builds index, returns the session.
 	info1, ok := store.FindByID("fake-uuid-1234567890ab")
@@ -57,7 +60,10 @@ func TestFindByID_PrefixMatchStillWorks(t *testing.T) {
 	tmpDir := t.TempDir()
 	writeFakeSessionFile(t, tmpDir, "--fake--", "abcdef1234567890xyz")
 
-	store := NewSessionStore(tmpDir)
+	store, err := NewSessionStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewSessionStore: %v", err)
+	}
 
 	// Prefix "abcdef12" (8 chars) should match.
 	info, ok := store.FindByID("abcdef12")
@@ -79,7 +85,10 @@ func TestFindByID_NotFound(t *testing.T) {
 	tmpDir := t.TempDir()
 	writeFakeSessionFile(t, tmpDir, "--fake--", "real-session-id-1234")
 
-	store := NewSessionStore(tmpDir)
+	store, err := NewSessionStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewSessionStore: %v", err)
+	}
 
 	if _, ok := store.FindByID("nonexistent-id-xyz"); ok {
 		t.Error("FindByID returned ok=true for non-existent ID")
