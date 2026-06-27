@@ -159,6 +159,9 @@ var projectNewCmd = &cobra.Command{
 				return fmt.Errorf("get current directory: %w", err)
 			}
 			name = filepath.Base(abs)
+			if err := validateProjectName(name); err != nil {
+				return fmt.Errorf("invalid project name derived from CWD: %w", err)
+			}
 		}
 		return app.CreateProject(cfg, name, repoPath)
 	},
@@ -380,4 +383,31 @@ func init() {
 // PersistentPreRun (after flag parsing) so all subcommands can use it.
 func Execute() error {
 	return rootCmd.Execute()
+}
+
+// validateProjectName enforces the project name contract:
+//   - 1-256 characters (defense against 10MB name strings bloating projects.json)
+//   - No control characters (defense against log injection / UI corruption)
+//   - No whitespace-only names (empty after trim)
+//
+// CASTRATION-3 from post-P3P4 audit: previously names were stored verbatim.
+// Length cap is generous (256 chars); normal names are <50.
+func validateProjectName(name string) error {
+	const maxLen = 256
+	if len(name) == 0 {
+		return fmt.Errorf("project name must not be empty")
+	}
+	if len(name) > maxLen {
+		return fmt.Errorf("project name too long (%d chars; max %d)", len(name), maxLen)
+	}
+	trimmed := strings.TrimSpace(name)
+	if trimmed == "" {
+		return fmt.Errorf("project name must not be only whitespace")
+	}
+	for i, r := range name {
+		if r < 0x20 || r == 0x7f {
+			return fmt.Errorf("project name contains control character at position %d (0x%02x)", i, r)
+		}
+	}
+	return nil
 }
