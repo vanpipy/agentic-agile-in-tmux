@@ -111,7 +111,18 @@ func (c *Checker) Check() CheckResult {
 		url = fmt.Sprintf("https://api.github.com/repos/%s/releases/latest", githubRepo)
 	}
 
-	resp, err := client.Get(url)
+	// GitHub API requires a User-Agent header. Unidentified requests are
+	// rate-limited more aggressively. See:
+	//   https://docs.github.com/en/rest/overview/resources-in-the-rest-api#user-agent-required
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		result.Error = fmt.Errorf("failed to build update request: %w", err)
+		return result
+	}
+	req.Header.Set("User-Agent", "awp/"+c.CurrentVersion+" (+https://github.com/"+githubRepo+")")
+	req.Header.Set("Accept", "application/vnd.github+json")
+
+	resp, err := client.Do(req)
 	if err != nil {
 		result.Error = fmt.Errorf("failed to check for updates: %w", err)
 		return result
