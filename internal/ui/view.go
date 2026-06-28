@@ -1366,7 +1366,8 @@ func (m *Model) countVisibleTickets() int {
 func (m *Model) renderProjectSelector() string {
 	projects := m.globalStore.Projects()
 	if len(projects) == 0 {
-		return m.dimStyle().Render("No projects yet — press Enter to add one")
+		// Single entry point: add projects from the sidebar.
+		return m.dimStyle().Render("No projects yet — press Esc, then 'a' in sidebar to add one")
 	}
 
 	if m.ticketFormField != formFieldProject {
@@ -1374,10 +1375,6 @@ func (m *Model) renderProjectSelector() string {
 			return lipgloss.NewStyle().Foreground(m.colors.info).Render(m.selectedProject.Name)
 		}
 		return m.dimStyle().Render("Tab to select project")
-	}
-
-	if m.showAddProjectForm {
-		return m.renderAddProjectForm()
 	}
 
 	var lines []string
@@ -1403,13 +1400,6 @@ func (m *Model) renderProjectSelector() string {
 		lines = append(lines, line)
 	}
 
-	addOption := "○ " + lipgloss.NewStyle().Foreground(m.colors.success).Render("+ Add project...")
-	if m.projectListIndex == len(projects) {
-		content := lipgloss.NewStyle().Foreground(m.colors.info).Render("● ") +
-			lipgloss.NewStyle().Foreground(m.colors.success).Bold(true).Render("+ Add project...")
-		addOption = lipgloss.NewStyle().Background(m.colors.surface).Padding(0, 1).Render(content)
-	}
-	lines = append(lines, addOption)
 	lines = append(lines, "")
 	lines = append(lines, m.dimStyle().Render("↑↓ navigate  ⏎ select  d delete"))
 

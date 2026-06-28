@@ -115,7 +115,6 @@ type Model struct {
 	branchLocked       bool
 	selectedProject    *project.Project
 	projectListIndex   int
-	showAddProjectForm bool
 	addProjectPath     textinput.Model
 
 	blockerCandidates  []*board.Ticket
@@ -1091,21 +1090,16 @@ func (m *Model) handleTicketFormMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		m.ticketFormField = clickedField
 		m.focusCurrentField()
 
-		if clickedField == formFieldProject && !m.showAddProjectForm {
+		if clickedField == formFieldProject {
 			projects := m.globalStore.Projects()
 			projectRelY := relY - 24
-			if projectRelY >= 0 && projectRelY <= len(projects) {
+			if projectRelY >= 0 && projectRelY < len(projects) {
 				m.projectListIndex = projectRelY
-				if projectRelY == len(projects) {
-					m.showAddProjectForm = true
-					m.addProjectPath.SetValue("")
-					m.addProjectPath.Focus()
-					return m, textinput.Blink
-				}
-				if projectRelY < len(projects) {
-					m.selectedProject = projects[projectRelY]
-				}
+				m.selectedProject = projects[projectRelY]
 			}
+			// Note: there is intentionally no "+ Add project" row to
+			// click on inside the ticket form — single entry point for
+			// adding projects is the sidebar (openAddProjectForm).
 		}
 	}
 
@@ -1141,23 +1135,11 @@ func (m *Model) handleTicketForm(msg tea.KeyMsg, isEdit bool) (tea.Model, tea.Cm
 		m.blurAllFormFields()
 		m.editingTicketID = ""
 		m.branchLocked = false
-		m.showAddProjectForm = false
 		return m, nil
 
 	case "tab":
-		if m.showAddProjectForm && m.addProjectPath.Value() != "" {
-			m.createProjectFromPath()
-			if m.showAddProjectForm {
-				return m, nil
-			}
-		} else if m.showAddProjectForm {
-			m.showAddProjectForm = false
-		}
 		return m.nextFormField(isEdit), nil
 	case "shift+tab":
-		if m.showAddProjectForm {
-			m.showAddProjectForm = false
-		}
 		return m.prevFormField(isEdit), nil
 
 	case "ctrl+s":
@@ -1172,11 +1154,6 @@ func (m *Model) handleTicketForm(msg tea.KeyMsg, isEdit bool) (tea.Model, tea.Cm
 		}
 
 	case "esc":
-		if m.showAddProjectForm {
-			m.showAddProjectForm = false
-			m.addProjectPath.Blur()
-			return m, nil
-		}
 		m.mode = ModeNormal
 		m.blurAllFormFields()
 		m.editingTicketID = ""
@@ -1203,11 +1180,7 @@ func (m *Model) handleTicketForm(msg tea.KeyMsg, isEdit bool) (tea.Model, tea.Cm
 	case formFieldBlockedBy:
 		cmd = m.handleBlockerNav(msg)
 	case formFieldProject:
-		if m.showAddProjectForm {
-			m.addProjectPath, cmd = m.addProjectPath.Update(msg)
-		} else {
-			cmd = m.handleProjectListNav(msg)
-		}
+		cmd = m.handleProjectListNav(msg)
 	}
 	return m, cmd
 }
@@ -1245,7 +1218,12 @@ func (m *Model) handleWorktreeToggle(msg tea.KeyMsg) tea.Cmd {
 
 func (m *Model) handleProjectListNav(msg tea.KeyMsg) tea.Cmd {
 	projects := m.globalStore.Projects()
-	maxIndex := len(projects)
+	maxIndex := len(projects) - 1
+	// No projects at all: nothing to navigate. The user must press
+	// Esc and add one from the sidebar (single entry point).
+	if maxIndex < 0 {
+		return nil
+	}
 
 	switch msg.String() {
 	case "j", "down":
@@ -1264,7 +1242,7 @@ func (m *Model) handleProjectListNav(msg tea.KeyMsg) tea.Cmd {
 		}
 	}
 
-	// Auto-select the highlighted project (if not on "+ Add project" option)
+	// Auto-select the highlighted project.
 	if m.projectListIndex < len(projects) {
 		m.selectedProject = projects[m.projectListIndex]
 	}
@@ -1403,19 +1381,13 @@ func (m *Model) confirmDeleteProject(p *project.Project) {
 func (m *Model) handleProjectSelection() (tea.Model, tea.Cmd) {
 	projects := m.globalStore.Projects()
 
-	if m.showAddProjectForm {
-		return m.createProjectFromPath()
-	}
-
-	if m.projectListIndex < len(projects) {
+	if m.projectListIndex >= 0 && m.projectListIndex < len(projects) {
 		m.selectedProject = projects[m.projectListIndex]
-		return m, nil
 	}
-
-	m.showAddProjectForm = true
-	m.addProjectPath.SetValue("")
-	m.addProjectPath.Focus()
-	return m, textinput.Blink
+	// Out-of-bounds index (no projects or stale state): no-op.
+	// The ticket form has no inner add-project entry; users add
+	// projects from the sidebar only (single entry point).
+	return m, nil
 }
 
 func (m *Model) createProjectFromPath() (tea.Model, tea.Cmd) {
@@ -1472,7 +1444,6 @@ func (m *Model) createProjectFromPath() (tea.Model, tea.Cmd) {
 	m.globalStore.AddProject(newProject)
 	m.worktreeMgrs[newProject.ID] = git.NewWorktreeManager(newProject)
 	m.selectedProject = newProject
-	m.showAddProjectForm = false
 	m.addProjectPath.Blur()
 	m.projectListIndex = len(m.globalStore.Projects()) - 1
 
@@ -2130,7 +2101,6 @@ func (m *Model) createNewTicket() (tea.Model, tea.Cmd) {
 	m.ticketFormField = formFieldTitle
 	m.editingTicketID = ""
 	m.branchLocked = false
-	m.showAddProjectForm = false
 
 	if len(m.filterProjectIDs) == 1 {
 		for id := range m.filterProjectIDs {
