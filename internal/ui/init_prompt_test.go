@@ -13,9 +13,16 @@ import (
 // InitPrompt template ({{.Title}}, {{.Description}}, etc.)
 // is rendered with actual ticket data before being passed to pi.
 //
+// As of the 2026-06-28 "spawned agent auto-execute" fix, the rendered
+// InitPrompt is passed as a POSITIONAL arg to pi (the first user
+// message that triggers pi's auto-execute on startup), instead of
+// --append-system-prompt. The contract this test pins is unchanged:
+// the template must be rendered (no raw {{.X}} placeholders leaking
+// to pi) and the actual ticket fields must be in the rendered output.
+//
 // User reported: pi received "**Ticket Title:** {{.Title}}" instead
 // of the actual title. This is because the template wasn't rendered
-// before being passed as --append-system-prompt.
+// before being passed to pi.
 func TestPrepareSpawn_RendersInitPromptTemplate(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("AWP_CONFIG_DIR", tmpDir)
@@ -58,16 +65,22 @@ func TestPrepareSpawn_RendersInitPromptTemplate(t *testing.T) {
 		t.Fatalf("prepareSpawn returned %T, want spawnReadyMsg", msg)
 	}
 
-	// Find the --append-system-prompt arg and the value after it.
+	// Find the positional arg containing the rendered InitPrompt.
+	// (As of the 2026-06-28 fix, the InitPrompt is a positional arg,
+	// not a --append-system-prompt flag. See TestPrepareSpawn_PassesTicketAsPositionalArg
+	// for the regression test that pins the new mechanism.)
 	var promptArg string
-	for i, arg := range ready.args {
-		if arg == "--append-system-prompt" && i+1 < len(ready.args) {
-			promptArg = ready.args[i+1]
+	for _, arg := range ready.args {
+		if strings.HasPrefix(arg, "-") {
+			continue
+		}
+		if strings.Contains(arg, "My specific ticket title") {
+			promptArg = arg
 			break
 		}
 	}
 	if promptArg == "" {
-		t.Fatalf("--append-system-prompt not found in args: %v", ready.args)
+		t.Fatalf("no positional arg containing the rendered InitPrompt found in args: %v", ready.args)
 	}
 
 	// CRITICAL: none of the {{.X}} placeholders should remain.
@@ -156,16 +169,21 @@ func TestPrepareSpawn_RendersEffectiveBranchForNewTicket(t *testing.T) {
 		t.Fatalf("prepareSpawn returned %T, want spawnReadyMsg; msg=%+v", msg, msg)
 	}
 
-	// Find --append-system-prompt value.
+	// Find the positional arg containing the rendered InitPrompt.
+	// (As of the 2026-06-28 fix, the InitPrompt is a positional arg,
+	// not a --append-system-prompt flag.)
 	var promptArg string
-	for i, arg := range ready.args {
-		if arg == "--append-system-prompt" && i+1 < len(ready.args) {
-			promptArg = ready.args[i+1]
+	for _, arg := range ready.args {
+		if strings.HasPrefix(arg, "-") {
+			continue
+		}
+		if strings.Contains(arg, "Add user auth flow") {
+			promptArg = arg
 			break
 		}
 	}
 	if promptArg == "" {
-		t.Fatalf("--append-system-prompt not found in args: %v", ready.args)
+		t.Fatalf("no positional arg containing the rendered InitPrompt found in args: %v", ready.args)
 	}
 
 	// The effective branch and base should match what awp will actually
