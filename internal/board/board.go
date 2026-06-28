@@ -227,7 +227,7 @@ type Column struct {
 func DefaultColumns() []Column {
 	return []Column{
 		{ID: "backlog", Name: "Backlog", Status: StatusBacklog, Color: "#89b4fa", Limit: 0},
-		{ID: "in-progress", Name: "In Progress", Status: StatusInProgress, Color: "#f9e2af", Limit: 3},
+		{ID: "in-progress", Name: "In Progress", Status: StatusInProgress, Color: "#f9e2af", Limit: 0},
 	}
 }
 
