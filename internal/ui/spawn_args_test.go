@@ -81,18 +81,34 @@ func TestPrepareSpawn_DoesNotPassPiInit(t *testing.T) {
 		}
 	}
 
-	// Secondary assertion: when InitPrompt is set, --append-system-prompt
-	// should be present.
-	found := false
+	// Secondary assertion: when InitPrompt is set, the rendered prompt
+	// must be passed as a positional arg (NOT as --append-system-prompt).
+	// See TestPrepareSpawn_PassesTicketAsPositionalArg in
+	// spawn_auto_execute_test.go for the contract that drives this.
+	foundPositional := false
 	for _, arg := range ready.args {
-		if arg == "--append-system-prompt" {
-			found = true
+		if strings.HasPrefix(arg, "-") {
+			continue
+		}
+		if strings.Contains(arg, "TICKET-X") {
+			foundPositional = true
 			break
 		}
 	}
-	if !found {
-		t.Errorf("awp should pass --append-system-prompt when InitPrompt is set; args = %v",
-			ready.args)
+	if !foundPositional {
+		t.Errorf("awp should pass the rendered InitPrompt as a positional arg "+
+			"when InitPrompt is set; args = %v", ready.args)
+	}
+
+	// Tertiary assertion: --append-system-prompt must NOT be in args
+	// (the ticket is now the initial user message; the old flag would
+	// make pi see the ticket context twice).
+	for _, arg := range ready.args {
+		if arg == "--append-system-prompt" {
+			t.Errorf("awp should NOT pass --append-system-prompt; the ticket "+
+				"is now passed as a positional arg (the initial user message). "+
+				"args = %v", ready.args)
+		}
 	}
 
 	_ = p.ID

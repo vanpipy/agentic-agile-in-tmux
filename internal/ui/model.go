@@ -2558,16 +2558,31 @@ func (m *Model) prepareSpawn(ticket *board.Ticket, proj *project.Project) tea.Cm
 		// it via Pi.Args.
 		if isNewSession {
 			if cfg.Pi.InitPrompt != "" {
-				// Inject the ticket context as an append to pi's
-				// system prompt. pi 0.80 does NOT recognize --init
-				// (regression-tested in test/pi/spawn_args_test.go);
-				// it would exit with "Unknown option: --init",
-				// which manifests in awp as the spawned pane
-				// crashing immediately ("first spawn 闪退").
+				// Pass the ticket context as a POSITIONAL user message,
+				// not as --append-system-prompt. Reason: pi in interactive
+				// TUI mode only auto-executes on initial user messages
+				// (see pi-mono packages/coding-agent/src/cli/args.ts where
+				// any non-flag arg is pushed to result.messages, and
+				// packages/coding-agent/src/modes/interactive/interactive-mode.ts
+				// which processes initialMessages via
+				// `await this.session.prompt(message)` on startup).
+				// --append-system-prompt only adds system-level context
+				// that pi sees passively — it does NOT trigger a turn.
+				// User reported: "spawned agent 进入的时候 ticket 没执行" —
+				// the ticket context was being delivered as system
+				// context only, so pi booted and sat idle waiting for
+				// the user to type. The InitPrompt template's closing
+				// directive ("Begin by analyzing the ticket requirements
+				// and proposing your approach") is meant as a USER
+				// REQUEST, not a system reminder; positional arg is the
+				// right mechanism for it.
 				//
-				// --append-system-prompt is pi's supported mechanism
-				// for adding context; pi treats it as additional
-				// system-level guidance.
+				// pi 0.80 does NOT recognize --init (regression-tested
+				// in test/pi/spawn_args_test.go); it would exit with
+				// "Unknown option: --init", which manifests in awp as
+				// the spawned pane crashing immediately ("first spawn
+				// 闪退"). The positional-arg mechanism is independent
+				// of that historical bug.
 				//
 				// cfg.Pi.InitPrompt is a Go text/template string with
 				// placeholders like {{.Title}}, {{.Description}},
@@ -2582,12 +2597,12 @@ func (m *Model) prepareSpawn(ticket *board.Ticket, proj *project.Project) tea.Cm
 				// ticket with ticket.BranchName=="" would render
 				// {{.BranchName}} as empty even though awp just
 				// generated "task/<slug>" — pi then sees a misleading
-				// system prompt (regression-tested in init_prompt_test.go).
+				// prompt (regression-tested in init_prompt_test.go).
 				rendered, err := renderInitPrompt(cfg.Pi.InitPrompt, ticket, branchName, baseBranch, worktreePath)
 				if err != nil {
 					return spawnErrorMsg{ticketID: ticketID, err: "render init prompt: " + err.Error()}
 				}
-				args = append(args, "--append-system-prompt", rendered)
+				args = append(args, rendered)
 			}
 		} else {
 			hasFlag := false
