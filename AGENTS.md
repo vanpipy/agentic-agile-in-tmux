@@ -157,6 +157,8 @@ PTY management + terminal emulation. For internals, read `internal/terminal/pane
 - Always close PTY file descriptors (defer after `pty.Start`).
 - Don't assume the emulator handles every escape sequence; some need manual parsing.
 - Render state must use a `dirty` flag; returning a cached view freezes the UI (see `handleOutput` regression test).
+- **Tests must NOT replace `cmd` with `pane.Update(outMsg)`'s return value.** `Update` returns `tea.Batch(readOutput, scheduleRenderTick)`, whose `cmd()` returns `BatchMsg` not `OutputMsg`. The read loop dies after one chunk. Call `pane.Update(outMsg)` for side effects on `handleOutput` only; keep the original `readLoop` from `pane.StartCmd(...)` as `cmd`. Bubble Tea's runtime dispatches Batch correctly; test for-loops don't. See the doc-comment on `pane.Update` for the canonical pattern.
+- PTY path delivers `\r\n`, not `\n` (kernel ONLCR). Tests must not byte-compare PTY output against direct `HandleOutput` output — compare rendered state (`vt.ScrollbackLen()`, `pane.View()`) instead. Don't strip `\r` either — x/vt uses it for cursor positioning.
 
 **Concurrency invariants** (see top-of-file doc-comment in `pane.go` for the full diagram):
 

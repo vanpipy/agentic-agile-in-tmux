@@ -641,7 +641,34 @@ func (p *Pane) readOutputUnlocked() tea.Cmd {
 
 // --- Update Handler ---
 
-// Update handles messages for this pane, returns commands to execute
+// Update handles messages for this pane, returns commands to execute.
+//
+// IMPORTANT — test antipattern: pane.Update returns
+//   tea.Batch(p.readOutput(), p.scheduleRenderTick())
+// for OutputMsg. Tests calling Update in a manual read loop MUST NOT
+// do `cmd = pane.Update(outMsg)` — that replaces cmd with a Batch
+// whose cmd() returns BatchMsg (not OutputMsg), so the read loop
+// dies after one chunk. Only the first chunk's data gets fed to
+// handleOutput; subsequent chunks (and therefore scrollback /
+// selection / render state) are silently dropped.
+//
+// Correct pattern in tests:
+//   cmd := pane.StartCmd(...)        // readLoop closure, one Read per call
+//   for ... {
+//       msg := cmd()
+//       if outMsg, ok := msg.(OutputMsg); ok {
+//           pane.Update(outMsg)       // side effect on handleOutput only
+//       } else if _, ok := msg.(ExitMsg); ok {
+//           break
+//       }
+//   }
+//   // cmd stays as the original readLoop throughout.
+//
+// For Batch dispatch (readOutput + scheduleRenderTick running in
+// parallel), use Bubble Tea's runtime — internal/ui/model.go does
+// this correctly. Tests can't simulate the runtime's Batch→msg
+// re-dispatch in a flat for-loop; the manual readLoop pattern is
+// the only thing that works.
 func (p *Pane) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
 	case OutputMsg:
@@ -695,6 +722,16 @@ func (p *Pane) handleOutput(data []byte) {
 //     capturing scrollback per chunk to fix the openkanban
 //     "every-other-line" truncation bug
 //   - Always sets p.dirty so the next View() re-renders
+//
+// Note on \r: chunks arriving via the PTY path contain \r\n, not \n,
+// because the kernel's line discipline runs ONLCR (output \n → \r\n).
+// We intentionally do NOT strip \r — x/vt treats \r as cursor-to-col-0,
+// which is what we want for terminal semantics. Stripping it would
+// break cursor-positioning escapes that real pi emits. Direct
+// HandleOutput (render-only mode, no PTY) receives raw \n; that path
+// also works because x/vt handles bare \n as cursor-down. Both paths
+// end up at the same vt state, but tests should NOT compare raw byte
+// counts between the two paths — only the rendered output.
 func (p *Pane) handleOutputLocked(data []byte) {
 	if p.vt == nil {
 		return
