@@ -203,6 +203,8 @@ func NewModel(cfg *config.Config, globalStore *project.GlobalTicketStore, projec
 	ap.Placeholder = "/path/to/repository"
 	ap.CharLimit = 256
 	ap.Width = 40
+	ap.ShowSuggestions = true       // enable TAB completion in Add Project form
+	ap.SetSuggestions(nil)            // initial: no suggestions until user types
 
 	bf := textinput.New()
 	bf.Placeholder = "Filter tickets..."
@@ -631,6 +633,8 @@ func (m *Model) handleNormalMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m *Model) openAddProjectForm() (tea.Model, tea.Cmd) {
 	m.addProjectPath.SetValue("")
+	m.addProjectPath.SetSuggestions(nil) // start empty; refresh as user types
+	m.addProjectPath.ShowSuggestions = true
 	m.addProjectPath.Focus()
 	m.mode = ModeCreateProject
 	m.notification = ""
@@ -1941,8 +1945,19 @@ func (m *Model) handleCreateProjectMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	prev := m.addProjectPath.Value()
 	var cmd tea.Cmd
 	m.addProjectPath, cmd = m.addProjectPath.Update(msg)
+
+	// Refresh path-completion suggestions on every value change.
+	// (Bubbles' HasPrefix filter is applied against the suggestions
+	// list, so we just need to keep the list reflecting what's
+	// reachable from the current path.) Refresh on every keystroke
+	// is cheap (one os.ReadDir on the resolved parent).
+	if m.addProjectPath.Value() != prev {
+		m.addProjectPath.SetSuggestions(completePath(m.addProjectPath.Value()))
+	}
+
 	return m, cmd
 }
 
