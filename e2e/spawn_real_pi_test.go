@@ -30,7 +30,7 @@ func TestSpawn_RealPi_NoPanic(t *testing.T) {
 	pane := terminal.New("real-pi", 100, 30, 1000)
 	pane.SetWorkdir(t.TempDir())
 
-	cmd := pane.Start(piPath, "--help")
+	cmd := pane.StartCmd(piPath, "--help")
 	if cmd == nil {
 		t.Fatal("Start returned nil")
 	}
@@ -86,7 +86,7 @@ func TestSpawn_RealPi_InteractiveEcho(t *testing.T) {
 	pane := terminal.New("real-pi-echo", 100, 30, 1000)
 	pane.SetWorkdir(t.TempDir())
 
-	cmd := pane.Start(piPath)
+	cmd := pane.StartCmd(piPath)
 	if cmd == nil {
 		t.Fatal("Start returned nil")
 	}
@@ -165,7 +165,7 @@ func TestSpawn_RealPi_TwiceConsecutively(t *testing.T) {
 	// === First spawn ===
 	pane1 := terminal.New("real-pi-1", 100, 30, 1000)
 	pane1.SetWorkdir(t.TempDir())
-	cmd1 := pane1.Start(piPath)
+	cmd1 := pane1.StartCmd(piPath)
 	if cmd1 == nil {
 		t.Fatal("first Start returned nil")
 	}
@@ -200,7 +200,7 @@ loop1:
 	// === Second spawn ===
 	pane2 := terminal.New("real-pi-2", 100, 30, 1000)
 	pane2.SetWorkdir(t.TempDir())
-	cmd2 := pane2.Start(piPath)
+	cmd2 := pane2.StartCmd(piPath)
 	if cmd2 == nil {
 		t.Fatal("second Start returned nil")
 	}
@@ -254,7 +254,7 @@ func TestSpawn_RealPi_WithInitPrompt(t *testing.T) {
 	pane := terminal.New("init-prompt-test", 100, 30, 1000)
 	pane.SetWorkdir(t.TempDir())
 
-	cmd := pane.Start(piPath, "--append-system-prompt",
+	cmd := pane.StartCmd(piPath, "--append-system-prompt",
 		"You are working on ticket X. Title: hello. Description: test.")
 	if cmd == nil {
 		t.Fatal("Start returned nil")
@@ -311,7 +311,7 @@ func TestSpawn_RealPi_AfterPreviousFailure(t *testing.T) {
 	// === First spawn: with broken --init (simulating old code path) ===
 	pane1 := terminal.New("first-attempt", 100, 30, 1000)
 	pane1.SetWorkdir(t.TempDir())
-	cmd1 := pane1.Start(piPath, "--init", "test") // broken, but pi exits fast
+	cmd1 := pane1.StartCmd(piPath, "--init", "test") // broken, but pi exits fast
 
 	deadline1 := time.Now().Add(3 * time.Second)
 	gotExit1 := false
@@ -345,7 +345,7 @@ loop1:
 	// === Second spawn: with the fix ===
 	pane2 := terminal.New("second-attempt", 100, 30, 1000)
 	pane2.SetWorkdir(t.TempDir())
-	cmd2 := pane2.Start(piPath, "--append-system-prompt", "you are working on ticket X")
+	cmd2 := pane2.StartCmd(piPath, "--append-system-prompt", "you are working on ticket X")
 
 	sawOutput := false
 	deadline2 := time.Now().Add(5 * time.Second)

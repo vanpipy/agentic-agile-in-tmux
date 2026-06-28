@@ -27,7 +27,7 @@ func TestSpawn_TwiceConsecutively(t *testing.T) {
 	pane1 := terminal.New("ticket-1", 80, 24, 0)
 	pane1.SetWorkdir(t.TempDir())
 
-	cmd1 := pane1.Start(mockPath, "--mode", "rpc")
+	cmd1 := pane1.StartCmd(mockPath, "--mode", "rpc")
 	if cmd1 == nil {
 		t.Fatal("first: Start returned nil")
 	}
@@ -64,7 +64,7 @@ func TestSpawn_TwiceConsecutively(t *testing.T) {
 	pane2 := terminal.New("ticket-2", 80, 24, 0)
 	pane2.SetWorkdir(t.TempDir())
 
-	cmd2 := pane2.Start(mockPath, "--mode", "rpc")
+	cmd2 := pane2.StartCmd(mockPath, "--mode", "rpc")
 	if cmd2 == nil {
 		t.Fatal("second: Start returned nil")
 	}

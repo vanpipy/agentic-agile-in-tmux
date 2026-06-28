@@ -7,9 +7,29 @@ import (
 	"testing"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/pi/awp/internal/terminal"
 	testutil "github.com/pi/awp/internal/testutil"
 )
+
+// readWithTimeout runs cmd in a goroutine and waits up to timeout for
+// its result. Returns nil on timeout. Necessary because readOutput
+// blocks indefinitely on the PTY when the subprocess is idle
+// (interactive pi in TUI mode produces no further output). Without
+// this wrapper, the test loop would block on cmd() forever.
+func readWithTimeout(cmd tea.Cmd, timeout time.Duration) tea.Msg {
+	if cmd == nil {
+		return nil
+	}
+	ch := make(chan tea.Msg, 1)
+	go func() { ch <- cmd() }()
+	select {
+	case msg := <-ch:
+		return msg
+	case <-time.After(timeout):
+		return nil
+	}
+}
 
 // TestSpawnWriteInputStopThenSpawn mirrors the user scenario:
 //   1. spawn pi
@@ -33,23 +53,26 @@ func TestSpawnWriteInputStopThenSpawn(t *testing.T) {
 	// === Phase 1: first spawn ===
 	pane1 := terminal.New("first", 100, 30, 0)
 	pane1.SetWorkdir(t.TempDir())
-	cmd1 := pane1.Start(piPath, "--append-system-prompt", "test")
+	cmd1 := pane1.StartCmd(piPath, "--append-system-prompt", "test")
 	if cmd1 == nil {
 		t.Fatal("first Start nil")
 	}
 
-	// Drive the readOutput cycle for 2 seconds (let pi initialize)
+	// Drive the readOutput cycle for up to 2 seconds (let pi initialize).
+	// Each cmd1() call uses readWithTimeout because once pi enters its
+	// TUI, it produces no more output and the underlying pty.Read
+	// would block indefinitely.
 	time.Sleep(2 * time.Second)
 	gotOutput1 := false
-	for i := 0; i < 20; i++ {
-		msg := cmd1()
+	phase1Deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(phase1Deadline) {
+		msg := readWithTimeout(cmd1, 200*time.Millisecond)
 		if msg == nil {
-			time.Sleep(50 * time.Millisecond)
 			continue
 		}
 		if outMsg, ok := msg.(terminal.OutputMsg); ok {
 			gotOutput1 = true
-			_ = pane1.Update(outMsg)
+			cmd1 = pane1.Update(outMsg)
 		} else if _, ok := msg.(terminal.ExitMsg); ok {
 			t.Logf("first pi exited early")
 			break
@@ -65,12 +88,14 @@ func TestSpawnWriteInputStopThenSpawn(t *testing.T) {
 	}
 	time.Sleep(200 * time.Millisecond)
 	for i := 0; i < 10; i++ {
-		msg := cmd1()
+		msg := readWithTimeout(cmd1, 100*time.Millisecond)
 		if msg == nil {
 			break
 		}
 		if outMsg, ok := msg.(terminal.OutputMsg); ok {
-			_ = pane1.Update(outMsg)
+			cmd1 = pane1.Update(outMsg)
+		} else if _, ok := msg.(terminal.ExitMsg); ok {
+			break
 		}
 	}
 
@@ -84,7 +109,7 @@ func TestSpawnWriteInputStopThenSpawn(t *testing.T) {
 	go func() {
 		pane2 := terminal.New("second", 100, 30, 0)
 		pane2.SetWorkdir(t.TempDir())
-		cmd2 := pane2.Start(piPath, "--append-system-prompt", "second test")
+		cmd2 := pane2.StartCmd(piPath, "--append-system-prompt", "second test")
 		if cmd2 == nil {
 			t.Error("second Start nil")
 			done <- struct{}{}
@@ -92,11 +117,15 @@ func TestSpawnWriteInputStopThenSpawn(t *testing.T) {
 		}
 
 		sawOutput := false
+		// Give second pi 1.5s to initialize before the loop starts.
+		// Without this, readWithTimeout(200ms) fires before pi's first
+		// output arrives and we report 'second pi produced no output'.
+		// Phase 1 has the same 2s pre-loop sleep; mirror it here.
+		time.Sleep(1500 * time.Millisecond)
 		deadline := time.Now().Add(3 * time.Second)
 	loop:
 		for time.Now().Before(deadline) {
-			time.Sleep(50 * time.Millisecond)
-			msg := cmd2()
+			msg := readWithTimeout(cmd2, 200*time.Millisecond)
 			if msg == nil {
 				continue
 			}
