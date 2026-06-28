@@ -15,9 +15,9 @@ COMMIT  := $(shell git rev-parse --short HEAD 2>/dev/null || echo "dev")
 DATE    := $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
 
 LDFLAGS := -s -w \
-  -X github.com/pi/awp/internal/buildinfo.Version=$(VERSION) \
-  -X github.com/pi/awp/internal/buildinfo.Commit=$(COMMIT) \
-  -X github.com/pi/awp/internal/buildinfo.BuildDate=$(DATE)
+  -X github.com/pi/awp/internal/buildinfo.version=$(VERSION) \
+  -X github.com/pi/awp/internal/buildinfo.commit=$(COMMIT) \
+  -X github.com/pi/awp/internal/buildinfo.buildDate=$(DATE)
 
 .PHONY: build release release-local test test-integration test-e2e lint clean install run
 

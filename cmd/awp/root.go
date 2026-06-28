@@ -38,7 +38,7 @@ var rootCmd = &cobra.Command{
 each in its own git worktree, observed and steered from a single interface.
 
 See SYSTEM_DESIGN.md for the full design specification.`,
-	Version: buildinfo.Version,
+	Version: buildinfo.Version(),
 	// Phase 2: no-arg `awp` launches the TUI
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runTUI()
@@ -368,7 +368,7 @@ func init() {
 	rootCmd.PersistentFlags().BoolVar(&debug, "debug", false, "Enable debug logging to stderr")
 	rootCmd.PersistentPreRun = func(cmd *cobra.Command, args []string) {
 		observability.Init(debug)
-		observability.Debug("awp starting", "version", buildinfo.Version, "args", os.Args[1:])
+		observability.Debug("awp starting", "version", buildinfo.Version(), "args", os.Args[1:])
 	}
 	projectCmd.AddCommand(projectNewCmd, projectListCmd, projectDeleteCmd)
 	ticketCmd.AddCommand(ticketListCmd)
