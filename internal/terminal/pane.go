@@ -237,7 +237,13 @@ func (p *Pane) GetScrollbackLine(index int) string {
 	}
 	var b strings.Builder
 	for x := 0; x < width; x++ {
-		b.WriteRune(cellRune(p.vt.ScrollbackCellAt(x, index)))
+		cell := p.vt.ScrollbackCellAt(x, index)
+		if isPlaceholder(cell) {
+			// Skip the "second column" of a wide char; emitting
+			// it would duplicate visual width and break wrap.
+			continue
+		}
+		b.WriteRune(cellRune(cell))
 	}
 	return strings.TrimRight(b.String(), " ")
 }
@@ -1210,7 +1216,12 @@ func (p *Pane) GetContent() string {
 			result.WriteByte('\n')
 		}
 		for col := 0; col < cols; col++ {
-			result.WriteRune(cellRune(p.vt.CellAt(col, row)))
+			cell := p.vt.CellAt(col, row)
+			if isPlaceholder(cell) {
+				// Skip the second column of a wide char.
+				continue
+			}
+			result.WriteRune(cellRune(cell))
 		}
 	}
 
@@ -1349,6 +1360,14 @@ func (p *Pane) renderGlyphLine(line []*uv.Cell, cols int, logicalRow int) string
 		if col < len(line) {
 			cell = line[col]
 		}
+
+		// Placeholder cell (zero-value, second column of a wide char).
+		// Skip emission but propagate batch state so the wide char's
+		// style + selection aren't broken at the placeholder boundary.
+		if isPlaceholder(cell) {
+			continue
+		}
+
 		ch := cellRune(cell)
 
 		// Check if this cell is selected
@@ -1400,6 +1419,12 @@ func (p *Pane) renderLiveRow(cols, row int, logicalRow int) string {
 
 	for col := 0; col < cols; col++ {
 		cell := p.vt.CellAt(col, row)
+
+		// Placeholder cell: skip emission, keep batch state.
+		if isPlaceholder(cell) {
+			continue
+		}
+
 		ch := cellRune(cell)
 
 		isCursor := cursorVis && col == cursorPos.X && row == cursorPos.Y
@@ -1467,6 +1492,12 @@ func (p *Pane) renderLiveScreenUnlocked(cols, rows int) string {
 
 		for col := 0; col < cols; col++ {
 			cell := p.vt.CellAt(col, row)
+
+			// Placeholder cell: skip emission, keep batch state.
+			if isPlaceholder(cell) {
+				continue
+			}
+
 			ch := cellRune(cell)
 
 			isCursor := cursorVis && col == cursorPos.X && row == cursorPos.Y
@@ -1579,16 +1610,42 @@ func colorToANSI(c color.Color, isFG bool) string {
 }
 
 // cellRune extracts the first rune from a uv.Cell's Content field.
-// Returns ' ' for nil/empty cells.
+//
+// Returns 0 (NUL) for placeholder cells (Cell{} zero-value, which
+// x/vt uses to "fill" the second column of a wide character whose
+// main cell has Width=2). Callers must check for 0 and skip output;
+// emitting a placeholder as a space causes "half-font spacing"
+// between CJK chars and breaks line-wrap alignment (Bug: wide
+// chars render with extra gap, cursor lands on wrong row).
+//
+// For nil cells (which can occur at the buffer's edges) we keep
+// the legacy behavior of returning ' ' — callers can still emit a
+// visible character and downstream visualWidth treats it as 1.
 func cellRune(c *uv.Cell) rune {
-	if c == nil || c.Content == "" {
+	if c == nil {
 		return ' '
+	}
+	if c.IsZero() {
+		// Placeholder cell for the second column of a wide char.
+		// Returning 0 (not ' ') is the signal for callers to skip.
+		return 0
 	}
 	r := []rune(c.Content)
 	if len(r) == 0 {
 		return ' '
 	}
 	return r[0]
+}
+
+// isPlaceholder reports whether c is a placeholder cell — the
+// zero-value (Cell{}) that x/vt inserts after a wide character
+// whose Width is > 1. Placeholders must NOT be emitted during
+// rendering; doing so duplicates visual width and breaks wrap.
+//
+// Mirrors cellRune's logic but is more explicit at call sites
+// where a skip decision is the only thing needed.
+func isPlaceholder(c *uv.Cell) bool {
+	return c != nil && c.IsZero()
 }
 
 // cellStyleOr returns cell.Style or fallback if cell is nil.

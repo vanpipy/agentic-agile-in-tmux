@@ -161,8 +161,13 @@ func (s *SelectionState) ExtractText(
 				endCol = len(line) - 1
 			}
 			for col := startCol; col <= endCol && col < len(line); col++ {
-				ch := cellRune(line[col])
-				result.WriteRune(ch)
+				cell := line[col]
+				if isPlaceholder(cell) {
+					// Skip the second column of a wide char — emitting
+					// it duplicates the character into the clipboard.
+					continue
+				}
+				result.WriteRune(cellRune(cell))
 			}
 		} else if row >= 0 && liveScreen != nil {
 			// From live screen - need to know line width
@@ -174,6 +179,10 @@ func (s *SelectionState) ExtractText(
 			var lineChars []rune
 			for col := startCol; col < maxCol; col++ {
 				cell := liveScreen(col, row)
+				if isPlaceholder(cell) {
+					// Skip the second column of a wide char.
+					continue
+				}
 				lineChars = append(lineChars, cellRune(cell))
 			}
 			// Trim trailing spaces for non-last rows
