@@ -206,27 +206,15 @@ func TestTicket_SetStatus(t *testing.T) {
 		}
 	})
 
-	t.Run("transition to done sets CompletedAt", func(t *testing.T) {
+	t.Run("transition to in_progress from in_progress is no-op timestamps", func(t *testing.T) {
 		ticket := NewTicket("Test", "project-1")
-
-		if ticket.CompletedAt != nil {
-			t.Error("new ticket should have nil CompletedAt")
-		}
-
-		before := time.Now()
-		ticket.SetStatus(StatusDone)
-		after := time.Now()
-
-		if ticket.Status != StatusDone {
-			t.Errorf("ticket.Status = %q; want %q", ticket.Status, StatusDone)
-		}
-
-		if ticket.CompletedAt == nil {
-			t.Error("CompletedAt should be set after transition to done")
-		}
-
-		if ticket.CompletedAt.Before(before) || ticket.CompletedAt.After(after) {
-			t.Errorf("ticket.CompletedAt = %v; want between %v and %v", *ticket.CompletedAt, before, after)
+		ticket.SetStatus(StatusInProgress)
+		originalStartedAt := *ticket.StartedAt
+		time.Sleep(time.Millisecond)
+		ticket.SetStatus(StatusInProgress)
+		// Same-status is a no-op; StartedAt should not move.
+		if !ticket.StartedAt.Equal(originalStartedAt) {
+			t.Errorf("StartedAt = %v; want %v (no-op on same-status)", *ticket.StartedAt, originalStartedAt)
 		}
 	})
 
@@ -236,10 +224,6 @@ func TestTicket_SetStatus(t *testing.T) {
 
 		if ticket.StartedAt != nil {
 			t.Error("StartedAt should remain nil for backlog status")
-		}
-
-		if ticket.CompletedAt != nil {
-			t.Error("CompletedAt should remain nil for backlog status")
 		}
 	})
 
@@ -259,8 +243,8 @@ func TestTicket_SetStatus(t *testing.T) {
 func TestDefaultColumns(t *testing.T) {
 	columns := DefaultColumns()
 
-	if len(columns) != 3 {
-		t.Fatalf("DefaultColumns() returned %d columns; want 3", len(columns))
+	if len(columns) != 2 {
+		t.Fatalf("DefaultColumns() returned %d columns; want 2", len(columns))
 	}
 
 	expected := []struct {
@@ -270,7 +254,6 @@ func TestDefaultColumns(t *testing.T) {
 	}{
 		{"backlog", "Backlog", StatusBacklog},
 		{"in-progress", "In Progress", StatusInProgress},
-		{"done", "Done", StatusDone},
 	}
 
 	for i, exp := range expected {
@@ -301,12 +284,6 @@ func TestTicketStatus_Constants(t *testing.T) {
 	}
 	if StatusInProgress != "in_progress" {
 		t.Errorf("StatusInProgress = %q; want %q", StatusInProgress, "in_progress")
-	}
-	if StatusDone != "done" {
-		t.Errorf("StatusDone = %q; want %q", StatusDone, "done")
-	}
-	if StatusArchived != "archived" {
-		t.Errorf("StatusArchived = %q; want %q", StatusArchived, "archived")
 	}
 }
 
