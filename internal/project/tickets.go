@@ -207,6 +207,13 @@ func NewGlobalTicketStore(registry *ProjectRegistry) *GlobalTicketStore {
 // LoadGlobalTicketStore loads ticket stores for every project in
 // the registry. Projects with missing ticket files are loaded as
 // empty stores.
+//
+// Post-2026-06-28 simplification: tickets with the removed status
+// values "done" or "archived" (which may exist in pre-simplification
+// JSONL files) are silently dropped from the loaded store. The user
+// accepted this as a breaking change ("不兼容，历史数据移除"); no
+// migration is performed. See internal/project/load_filter_test.go
+// for the contract test.
 func LoadGlobalTicketStore(registry *ProjectRegistry) (*GlobalTicketStore, error) {
 	g := NewGlobalTicketStore(registry)
 
@@ -220,6 +227,14 @@ func LoadGlobalTicketStore(registry *ProjectRegistry) (*GlobalTicketStore, error
 		g.ticketStores[p.ID] = store
 
 		for id, ticket := range store.Tickets {
+			// Filter out tickets with removed status values. We compare
+			// against raw strings ("done", "archived") rather than
+			// board.StatusDone/StatusArchived because those constants
+			// no longer exist after the state-machine simplification.
+			// This is the breaking-change data-compat boundary.
+			if s := string(ticket.Status); s == "done" || s == "archived" {
+				continue
+			}
 			g.allTickets[id] = ticket
 		}
 	}
@@ -348,24 +363,14 @@ func (g *GlobalTicketStore) RemoveProject(id string) error {
 		return ErrProjectNotFound
 	}
 
-	// Archive ticket file before removing
+	// Post-2026-06-28: project deletion is final. The JSONL ticket
+	// file is removed (not archived to tickets/archived/). The
+	// previous archive-on-delete behavior was a relic of the 4-state
+	// model; with the 2-state model and the 'delete = done' UX, the
+	// user has already declared what they wanted to keep.
 	srcPath := filepath.Join(ticketsDir(), id+".json")
-	if _, err := os.Stat(srcPath); err == nil {
-		archivedDir := filepath.Join(ticketsDir(), "archived")
-		if err := os.MkdirAll(archivedDir, 0755); err != nil {
-			return err
-		}
-
-		dstPath := filepath.Join(archivedDir, id+".json")
-		// If archived file already exists, append timestamp
-		if _, err := os.Stat(dstPath); err == nil {
-			dstPath = filepath.Join(archivedDir, fmt.Sprintf("%s_%d.json", id, time.Now().Unix()))
-		}
-
-		if err := os.Rename(srcPath, dstPath); err != nil {
-			return err
-		}
-		log.Printf("Archived tickets to %s", dstPath)
+	if err := os.Remove(srcPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove ticket file %s: %w", srcPath, err)
 	}
 
 	delete(g.projects, id)
