@@ -605,9 +605,7 @@ func (m *Model) handleNormalMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "d":
 		return m.confirmDeleteTicket()
 	case " ":
-		return m.quickMoveTicket()
-	case "-", "backspace":
-		return m.quickMoveTicketBackward()
+		return m.toggleSelectedTicket()
 	case "s":
 		return m.spawnAgent()
 	case "S":
@@ -1314,9 +1312,6 @@ func (m *Model) initBlockerCandidates(excludeTicketID board.TicketID) {
 	m.blockerCandidates = nil
 	for _, ticket := range m.globalStore.All() {
 		if ticket.ID == excludeTicketID {
-			continue
-		}
-		if ticket.Status == board.StatusArchived {
 			continue
 		}
 		m.blockerCandidates = append(m.blockerCandidates, ticket)
@@ -2288,18 +2283,48 @@ func (m *Model) performTicketCleanup(ticket *board.Ticket) {
 	m.notify("Deleted: " + ticketTitle)
 }
 
-func (m *Model) quickMoveTicket() (tea.Model, tea.Cmd) {
+// toggleSelectedTicket is the Space-key handler. It moves the selected
+// ticket to the opposite column (backlog ↔ in_progress) and is its
+// own inverse — pressing Space twice on the same ticket leaves it
+// in the original column.
+//
+// In the simplified 2-state model, Space replaces both the old
+// "next status" and "previous status" keys (which were Space and
+// `-`/backspace in the 4-state model). Direction is implicit: the
+// current status determines the target.
+//
+// Side effects:
+//   - If moving backlog → in_progress, sets up worktree/branch as needed
+//   - If moving in_progress → backlog with a running agent, the
+//     orphan-agent guard (checkOrphanAgentBeforeMove) blocks the move
+//   - Refreshes the column view + persists the new status
+func (m *Model) toggleSelectedTicket() (tea.Model, tea.Cmd) {
 	ticket := m.selectedTicket()
 	if ticket == nil {
 		return m, nil
 	}
 
-	nextStatus := m.nextStatus(ticket.Status)
-	if nextStatus == ticket.Status {
+	target := m.toggleTicketStatus(ticket.Status)
+	if target == ticket.Status {
+		// Same-status toggle is a no-op. In 2-state model this branch
+		// is unreachable for valid input (both states have an opposite),
+		// but the guard is kept defensive.
 		return m, nil
 	}
 
-	if nextStatus == board.StatusInProgress && ticket.WorktreePath == "" {
+	// Caller-side orphan-agent guard: in_progress → backlog is
+	// blocked if the agent is still working. The guard is required
+	// by the state-machine design (CanTransitionTo is pure, no agent
+	// coupling; the UI is responsible for this check).
+	if err := m.checkOrphanAgentBeforeMove(ticket, target); err != nil {
+		m.notify("Move rejected: " + err.Error())
+		return m, nil
+	}
+
+	// Side effect: moving to in_progress requires worktree/branch setup
+	// (the same setup that happens when the user presses Space to start
+	// work on a backlog ticket).
+	if target == board.StatusInProgress && ticket.WorktreePath == "" {
 		if ticket.UseWorktree {
 			if err := m.setupWorktree(ticket); err != nil {
 				m.notify("Worktree failed: " + err.Error())
@@ -2313,45 +2338,33 @@ func (m *Model) quickMoveTicket() (tea.Model, tea.Cmd) {
 		}
 	}
 
-	if err := m.globalStore.Move(ticket.ID, nextStatus); err != nil {
+	if err := m.globalStore.Move(ticket.ID, target); err != nil {
 		m.notify("Move rejected: " + err.Error())
 		return m, nil
 	}
 	m.refreshColumnTickets()
 	m.selectTicketByID(ticket.ID)
 	m.saveTicket(ticket)
-	m.notify("Moved to " + string(nextStatus))
+	m.notify("Moved to " + string(target))
 
 	return m, nil
 }
 
-func (m *Model) quickMoveTicketBackward() (tea.Model, tea.Cmd) {
-	ticket := m.selectedTicket()
-	if ticket == nil {
-		return m, nil
+// toggleTicketStatus returns the opposite status in the 2-state model:
+// backlog ↔ in_progress. Same-status returns current (defensive; in
+// practice, the caller filters this out before doing side effects).
+//
+// This is a pure function on the receiver (doesn't read m.*) and is
+// exercised directly by toggle_status_test.go.
+func (m *Model) toggleTicketStatus(current board.TicketStatus) board.TicketStatus {
+	switch current {
+	case board.StatusBacklog:
+		return board.StatusInProgress
+	case board.StatusInProgress:
+		return board.StatusBacklog
+	default:
+		return current
 	}
-
-	prevStatus := m.previousStatus(ticket.Status)
-	if prevStatus == ticket.Status {
-		return m, nil
-	}
-
-	// Caller-side orphan-agent guard (see dropTicket for the rationale).
-	if err := m.checkOrphanAgentBeforeMove(ticket, prevStatus); err != nil {
-		m.notify("Move rejected: " + err.Error())
-		return m, nil
-	}
-
-	if err := m.globalStore.Move(ticket.ID, prevStatus); err != nil {
-		m.notify("Move rejected: " + err.Error())
-		return m, nil
-	}
-	m.refreshColumnTickets()
-	m.selectTicketByID(ticket.ID)
-	m.saveTicket(ticket)
-	m.notify("Moved to " + string(prevStatus))
-
-	return m, nil
 }
 
 // checkOrphanAgentBeforeMove is the caller-side orphan-agent guard.
@@ -2715,41 +2728,6 @@ func (m *Model) ticketMatchesFilter(t *board.Ticket) bool {
 	title := strings.ToLower(t.Title)
 	desc := strings.ToLower(t.Description)
 	return strings.Contains(title, query) || strings.Contains(desc, query)
-}
-
-func (m *Model) nextStatus(current board.TicketStatus) board.TicketStatus {
-	switch current {
-	case board.StatusBacklog:
-		return board.StatusInProgress
-	case board.StatusInProgress:
-		return board.StatusDone
-	case board.StatusDone:
-		// Forward from Done advances to Archived (the natural "clean up
-		// finished work" step). Previously this fell into `default:` and
-		// returned current, making the keyboard handler in quickMoveTicket
-		// short-circuit on `nextStatus == ticket.Status` and silently do
-		// nothing — users reported the Done column tickets couldn't move.
-		// The state machine (board.CanTransitionTo, SYSTEM_DESIGN.md §3
-		// row `done → archived | ✅ | 归档`) explicitly allows this.
-		// Archived is filtered out of the visible columns by design
-		// (see model.go refreshColumnTickets), so the ticket disappears
-		// after the move — that is the intended UX.
-		return board.StatusArchived
-	default:
-		// StatusArchived (and any future status): terminal, no-op.
-		return current
-	}
-}
-
-func (m *Model) previousStatus(current board.TicketStatus) board.TicketStatus {
-	switch current {
-	case board.StatusDone:
-		return board.StatusInProgress
-	case board.StatusInProgress:
-		return board.StatusBacklog
-	default:
-		return current
-	}
 }
 
 func (m *Model) notify(msg string) {

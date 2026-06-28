@@ -408,35 +408,37 @@ type PiSessionInfo struct {
 }
 ```
 
-### 5.4 Ticket Status 状态机
+### 5.4 Ticket Status 状态机(2026-06-28 简化)
 
-Ticket 状态转换由 `board.Ticket.CanTransitionTo(target TicketStatus) error` 强制验证。状态机(2026-06-27 D 修复)：
+Ticket 状态转换由 `board.Ticket.CanTransitionTo(target TicketStatus) error` 强制验证。
+
+**2026-06-28 重大简化**:状态机从 4 状态(`backlog` / `in_progress` / `done` / `archived`)缩减为 **2 状态**(`backlog` / `in_progress`)。原因为:
+
+- "完成"是用户的判断,不是状态机能编码的事——用户决定做完了,按 `d` 键**删除**任务,而不是把它推到 `done` / `archived`
+- 4 状态机的语义设计过度(尤其是 `archived` 终态带来的"看不到/找不到/恢复不了"等 UX 问题)
+- 完成历史记录由 git log + pi session log 承担,不需要看板再记一份
+
+**新状态机**——无终态、无归档、无完成:
 
 ```
-              ┌─────────────────────────────┐
-              ▼                             │
-backlog ⇄ in_progress ──► done ─────────────┤
-                │           │               │
-                └───────────┴──► archived ◄──┘
-                              (terminal)
+backlog ⇄ in_progress
 ```
 
 | 转换 | 允许？ | 说明 |
 |---|---|---|
-| `backlog` → `in_progress` | ✅ | 开始工作 |
+| `backlog` → `in_progress` | ✅ | Space 键:开始工作 |
+| `in_progress` → `backlog` | ✅ | Space 键:暂停 / 重新考虑优先级 |
 | `backlog` → `backlog` | ✅ | no-op |
-| `backlog` → `done` | ✅ | 简单任务 |
-| `backlog` → `archived` | ✅ | 取消 |
-| `in_progress` → `backlog` (无 agent) | ✅ | 重新考虑优先级 |
-| `in_progress` → `backlog` (AgentWorking) | ❌ | 会孤立运行中的 pi 子进程 |
-| `in_progress` → `done` | ✅ | 完成 |
-| `in_progress` → `archived` | ✅ | 放弃 |
-| `done` → `backlog` | ✅ | 重新打开 |
-| `done` → `in_progress` | ✅ | 重启 |
-| `done` → `archived` | ✅ | 归档 |
-| `archived` → * | ❌ | archived 是终态 |
+| `in_progress` → `in_progress` | ✅ | no-op |
+| 其它 | — | 不存在 |
 
-UI 拒绝时通过通知 toast 反馈：`Move rejected: cannot move ticket to backlog while agent is working (stop the agent first)`。
+**Orphan-agent 守卫**:`in_progress` → `backlog` 在 `AgentStatus == AgentWorking` 时**被 UI 层拒绝**(避免孤立运行中的 pi 子进程)。状态机本身保持纯函数(agent 语义不属于 board package)。
+
+**删除即完成**:用户按 `d` 键时,任务被删除(worktree + branch + ticket 记录一起清)。这是不可逆操作;`git log` + pi session log 是恢复已完成工作的唯一来源。
+
+**数据兼容**:加载旧 JSONL 时,`status == "done"` 或 `status == "archived"` 的 ticket 会被静默丢弃(用户接受的破坏性变更)。
+
+UI 拒绝时通过通知 toast 反馈:`Move rejected: cannot move ticket to backlog while agent is working (stop the agent first)`。
 
 ---
 

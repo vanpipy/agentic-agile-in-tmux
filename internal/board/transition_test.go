@@ -1,23 +1,23 @@
-// transition_test.go — TDD tests for Cluster D.3 fix.
+// transition_test.go — TDD tests for the simplified ticket state machine.
 //
-// Cluster D.3 (Major from 2026-06-27 audit): Ticket.Move() and SetStatus()
-// accept any transition, including invalid ones. A drag-drop can move a
-// ticket from in_progress back to backlog while a pi agent is running,
-// leaving the UI in an inconsistent state.
+// Post-2026-06-28 simplification: the state machine has been reduced
+// from 4 states (backlog / in_progress / done / archived) to 2 states
+// (backlog / in_progress). The "is this done?" judgment is the user's,
+// not encoded in state — when finished, the user deletes the ticket
+// (not moves it to a terminal status).
 //
-// Fix: add Ticket.CanTransitionTo(target TicketStatus) error in board
-// package. UI calls it before Move()/SetStatus(). Transitions are:
-//   - backlog ↔ in_progress (allowed)
-//   - in_progress → done (allowed; marks CompletedAt)
-//   - done → backlog or done → in_progress (allowed; user reopens)
-//   - any → archived (allowed except from archived)
-//   - archived → * (FORBIDDEN: archived is terminal)
+// Transitions allowed:
+//   - backlog → in_progress (start work)
+//   - in_progress → backlog (pause / reorder)
+//   - same-status (no-op, allowed)
 //
-// Additionally, transitions FROM in_progress TO backlog are blocked if
-// AgentStatus is AgentWorking (would orphan the running pi).
+// All other transitions are forbidden by the state machine. Note that
+// orphan-agent protection (in_progress → backlog while AgentStatus ==
+// AgentWorking) is enforced by the UI layer (caller-side guard), not
+// here — CanTransitionTo is intentionally pure (no agent coupling).
 //
-// This is the canonical state machine; tests pin all 16 transitions
-// plus the AgentWorking guard.
+// This is the canonical state machine; tests pin every transition
+// (2×2 matrix = 4 cases).
 package board
 
 import (
@@ -26,16 +26,16 @@ import (
 	"testing"
 )
 
-// TestTicket_CanTransitionTo_BasicMatrix covers all 16 transitions in
-// the 4×4 status matrix. Most are allowed; archived → * is forbidden.
+// TestTicket_CanTransitionTo_BasicMatrix covers all 4 transitions in
+// the simplified 2×2 status matrix.
 //
 // CORRECT-7 self-check:
 //   C-onformance: error must be nil for allowed, non-nil for forbidden
 //   O-rdering: N/A (each transition is independent)
-//   R-ange: 4×4 = 16 cases
+//   R-ange: 2×2 = 4 cases
 //   R-eference: no external deps
 //   E-xistence: covered (same-status transition included)
-//   C-ardinality: 16 cases
+//   C-ardinality: 4 cases
 //   T-ime: no time concerns
 func TestTicket_CanTransitionTo_BasicMatrix(t *testing.T) {
 	tests := []struct {
@@ -43,29 +43,13 @@ func TestTicket_CanTransitionTo_BasicMatrix(t *testing.T) {
 		toStr   string
 		wantErr bool
 	}{
-		// FROM backlog
-		{"backlog", "backlog", false}, // same-status is OK (no-op)
-		{"backlog", "in_progress", false},
-		{"backlog", "done", false},
-		{"backlog", "archived", false},
+		// backlog row
+		{"backlog", "backlog", false},    // same-status no-op
+		{"backlog", "in_progress", false}, // start work
 
-		// FROM in_progress (no running agent)
-		{"in_progress", "backlog", false}, // reopen allowed when no agent
-		{"in_progress", "in_progress", false},
-		{"in_progress", "done", false},
-		{"in_progress", "archived", false},
-
-		// FROM done
-		{"done", "backlog", false}, // reopen
-		{"done", "in_progress", false}, // restart
-		{"done", "done", false},
-		{"done", "archived", false},
-
-		// FROM archived (terminal — all transitions forbidden)
-		{"archived", "backlog", true},
-		{"archived", "in_progress", true},
-		{"archived", "done", true},
-		{"archived", "archived", false}, // same-status no-op
+		// in_progress row
+		{"in_progress", "in_progress", false}, // same-status no-op
+		{"in_progress", "backlog", false},      // pause / reorder
 	}
 
 	for _, tt := range tests {
@@ -85,41 +69,39 @@ func TestTicket_CanTransitionTo_BasicMatrix(t *testing.T) {
 	}
 }
 
-// TestTicket_CanTransitionTo_RejectsOrphanAgent was REMOVED in the FOOT-3
-// follow-up (post-P3P4 audit): CanTransitionTo is now PURE (no agent
-// coupling). The orphan-agent guard moved to the UI layer (see
-// model.go:dropTicket / quickMoveTicket which check AgentWorking
-// before calling Move()).
+// TestTicket_CanTransitionTo_PureFunction documents and pins the design
+// decision: CanTransitionTo does NOT consult AgentStatus. The orphan-agent
+// guard (in_progress → backlog with AgentStatus == AgentWorking) lives
+// in the UI layer (model.go:checkOrphanAgentBeforeMove), not here.
+//
+// This test would catch a regression where someone "fixes" the orphan
+// problem by adding agent coupling back into the state machine.
+func TestTicket_CanTransitionTo_PureFunction(t *testing.T) {
+	tests := []AgentStatus{
+		AgentNone, AgentIdle, AgentWorking, AgentWaiting, AgentCompleted, AgentError,
+	}
+	for _, as := range tests {
+		t.Run(string(as), func(t *testing.T) {
+			ticket := NewTicket("t", "p1")
+			ticket.Status = StatusInProgress
+			ticket.AgentStatus = as
 
-// TestTicket_CanTransitionTo_AllowsReopenWhenAgentIdle was REMOVED:
-// with CanTransitionTo now pure, this test is trivially true for
-// all AgentStatus values. The caller-side guard (UI layer) is what
-// distinguishes AgentWorking (blocked) from AgentIdle (allowed).
-
-// TestTicket_CanTransitionTo_RejectsArchivedTerminal pins the contract
-// that archived is terminal. From archived, you cannot transition to any
-// other status (the only "valid" target is itself, as a no-op).
-func TestTicket_CanTransitionTo_RejectsArchivedTerminal(t *testing.T) {
-	ticket := NewTicket("archived-ticket", "p1")
-	ticket.Status = StatusArchived
-	ticket.AgentStatus = AgentNone
-
-	for _, target := range []TicketStatus{StatusBacklog, StatusInProgress, StatusDone} {
-		err := ticket.CanTransitionTo(target)
-		if err == nil {
-			t.Errorf("CanTransitionTo(archived → %s) returned nil; want error (archived is terminal)", target)
-		}
+			// in_progress → backlog must succeed regardless of agent state.
+			// The UI layer is responsible for blocking this when
+			// AgentStatus == AgentWorking.
+			if err := ticket.CanTransitionTo(StatusBacklog); err != nil {
+				t.Errorf("CanTransitionTo(in_progress → backlog) with AgentStatus=%q returned error %v; "+
+					"want nil (orphan-agent guard is UI-side, not state-machine)",
+					as, err)
+			}
+		})
 	}
 }
 
 // TestTicket_SetStatus_RespectsStateMachine verifies the integration:
-// SetStatus (called by Move()) should also enforce CanTransitionTo.
-// If a future PR adds a fast-path that bypasses the state machine,
-// this test surfaces it.
-//
-// Currently SetStatus unconditionally applies the new status; this
-// test pins the contract that the new validation gate MUST be in
-// place. If the gate isn't there, the test fails RED.
+// SetStatus (called by Move()) enforces CanTransitionTo. If a future
+// PR adds a fast-path that bypasses the state machine, this test
+// surfaces it.
 //
 // CORRECT-7 self-check:
 //   C-onformance: SetStatus returns error for forbidden transition
@@ -130,22 +112,20 @@ func TestTicket_CanTransitionTo_RejectsArchivedTerminal(t *testing.T) {
 //   C-ardinality: 2 cases
 //   T-ime: no time concerns
 func TestTicket_SetStatus_RespectsStateMachine(t *testing.T) {
-	t.Run("forbidden transition returns error", func(t *testing.T) {
-		ticket := NewTicket("forbidden", "p1")
-		ticket.Status = StatusArchived
+	t.Run("same-status is a no-op", func(t *testing.T) {
+		ticket := NewTicket("noop", "p1")
+		ticket.Status = StatusBacklog
 
-		err := ticket.SetStatus(StatusInProgress)
-		if err == nil {
-			t.Fatal("SetStatus(archived → in_progress) returned nil; want error")
+		err := ticket.SetStatus(StatusBacklog)
+		if err != nil {
+			t.Errorf("SetStatus(backlog → backlog) returned error: %v; want nil (no-op)", err)
 		}
-		// Ticket status should NOT have changed.
-		if ticket.Status != StatusArchived {
-			t.Errorf("Status = %q after rejected SetStatus; want %q (unchanged)",
-				ticket.Status, StatusArchived)
+		if ticket.Status != StatusBacklog {
+			t.Errorf("Status = %q; want %q", ticket.Status, StatusBacklog)
 		}
 	})
 
-	t.Run("allowed transition succeeds", func(t *testing.T) {
+	t.Run("allowed transition (backlog → in_progress) succeeds", func(t *testing.T) {
 		ticket := NewTicket("allowed", "p1")
 		ticket.Status = StatusBacklog
 
@@ -156,17 +136,60 @@ func TestTicket_SetStatus_RespectsStateMachine(t *testing.T) {
 		if ticket.Status != StatusInProgress {
 			t.Errorf("Status = %q; want %q", ticket.Status, StatusInProgress)
 		}
+		if ticket.StartedAt == nil {
+			t.Error("StartedAt should be set after transition to in_progress")
+		}
+	})
+
+	t.Run("allowed transition (in_progress → backlog) succeeds and clears StartedAt", func(t *testing.T) {
+		ticket := NewTicket("pause", "p1")
+		ticket.SetStatus(StatusInProgress)
+		if ticket.StartedAt == nil {
+			t.Fatal("precondition: StartedAt should be set after in_progress")
+		}
+
+		err := ticket.SetStatus(StatusBacklog)
+		if err != nil {
+			t.Errorf("SetStatus(in_progress → backlog) returned error: %v", err)
+		}
+		if ticket.Status != StatusBacklog {
+			t.Errorf("Status = %q; want %q", ticket.Status, StatusBacklog)
+		}
+		// StartedAt is intentionally NOT cleared — it records "first
+		// time the user started this ticket". Subsequent cycles
+		// accumulate. See field doc on StartedAt.
 	})
 }
 
 // TestBoardGo_CanTransitionToExists pins the source-level contract that
 // the CanTransitionTo method exists in board.go. Structural regression
-// test for Cluster D.3.
+// test for the original Cluster D.3 fix, retained to keep the audit
+// trail consistent.
 func TestBoardGo_CanTransitionToExists(t *testing.T) {
 	src := readBoardGoSource(t)
 	if !contains(src, "func (t *Ticket) CanTransitionTo(") {
 		t.Errorf("board.go missing Ticket.CanTransitionTo method.\n"+
-			"Cluster D.3: this is the canonical state-machine validator.")
+			"This is the canonical state-machine validator.")
+	}
+}
+
+// TestBoardGo_NoTerminalStatus pins the new design contract: there is
+// no longer a "terminal" status in the state machine. The Done and
+// Archived constants must not exist. A regression that re-introduces
+// them (e.g., to fix a perceived gap) would fail this test.
+func TestBoardGo_NoTerminalStatus(t *testing.T) {
+	src := readBoardGoSource(t)
+	if contains(src, "StatusDone") {
+		t.Errorf("board.go references StatusDone; the simplified state machine has no Done status.\n"+
+			"When the user judges a ticket done, they delete it (not move it).")
+	}
+	if contains(src, "StatusArchived") {
+		t.Errorf("board.go references StatusArchived; the simplified state machine has no Archived status.\n"+
+			"There is no terminal state — 'done' = 'delete'.")
+	}
+	if contains(src, "CompletedAt") {
+		t.Errorf("board.go references CompletedAt; with no Done status there is no setter for this field.\n"+
+			"Remove the CompletedAt field from the Ticket struct.")
 	}
 }
 
