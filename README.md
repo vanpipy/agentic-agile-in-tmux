@@ -33,6 +33,29 @@ builds a versioned binary with `-ldflags` injected into `buildinfo.*`,
 saved as `./awp` in the repo root — copy it yourself if you want it on
 `$PATH`.
 
+#### To install a specific version
+
+The simplest workflow for installing a particular tagged version
+(from a local checkout):
+
+```bash
+make release-local VERSION=0.1.2    # creates local v0.1.2 tag + ldflags binary
+make install                         # reinstalls; awp reports 0.1.2
+awp --version                        # → awp version 0.1.2
+```
+
+This works because `make install` (via `make build`) doesn't pass
+`-ldflags`, but awp's `buildinfo` resolver reads the nearest semver
+tag from `runtime/debug.BuildInfo`. The local tag created by
+`release-local` becomes that anchor — **don't delete the tag between
+the two steps**, or the version display will fall back to `0.0.0-dev`.
+
+For installing a published release without a local checkout:
+
+```bash
+go install github.com/vanpipy/agentic-with-pi@v0.1.2
+```
+
 ### Requirements
 
 - `go` (1.21+)
