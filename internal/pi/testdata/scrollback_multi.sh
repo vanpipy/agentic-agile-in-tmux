@@ -1,11 +1,19 @@
 #!/usr/bin/env bash
 # Mock binary for testing multi-line scrollback capture.
-# Writes 10 lines in one printf chunk, then sleeps to keep the PTY
-# alive long enough for pane.Stop() (SIGKILL) to clean up.
+# Writes 10 lines one at a time (20ms apart) then exits. The pacing
+# is necessary so each line arrives at x/vt as a separate chunk,
+# giving handleOutput a chance to capture scrolled-off lines into
+# the scrollback buffer. Without pacing (e.g. one printf + exit),
+# all 10 lines arrive in a single Read which races with EOF and
+# often loses 7+ lines to scrollback.
 #
-# Content matches the legacy /tmp/multi_pi.sh that this test originally
-# referenced via a hardcoded path (violating §5.6 anti-patterns).
-# Promoting the script into the repo fixes the clean-CI failure mode.
+# (Earlier revisions of this fixture used 'sleep 60' after a single
+# printf to keep the PTY alive, or exited immediately — both
+# produced flaky scrollback captures. Per-line pacing is the
+# reliable middle ground: small enough to keep the test fast, slow
+# enough to let x/vt track each line.)
 
-printf 'Line 1 content\nLine 2 content\nLine 3 content\nLine 4 content\nLine 5 content\nLine 6 content\nLine 7 content\nLine 8 content\nLine 9 content\nLine 10 content\n'
-sleep 60
+for i in $(seq 1 10); do
+  printf 'Line %s content\n' "$i"
+  sleep 0.02
+done

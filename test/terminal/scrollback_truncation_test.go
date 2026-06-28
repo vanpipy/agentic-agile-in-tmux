@@ -27,8 +27,11 @@ func TestScrollback_NoLineLoss_2LineChunks(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("Start nil")
 	}
-	cmd()
 
+	// Do NOT replace cmd with pane.Update's return. pane.Update
+	// returns tea.Batch(readOutput, scheduleRenderTick); subsequent
+	// cmd() calls return BatchMsg instead of OutputMsg. Keep calling
+	// the original readLoop closure — it does one Read per call.
 	for i := 0; i < 200; i++ {
 		time.Sleep(5 * time.Millisecond)
 		msg := cmd()
@@ -36,10 +39,7 @@ func TestScrollback_NoLineLoss_2LineChunks(t *testing.T) {
 			continue
 		}
 		if outMsg, ok := msg.(terminal.OutputMsg); ok {
-			next := pane.Update(outMsg)
-			if next != nil {
-				cmd = next
-			}
+			pane.Update(outMsg)
 		} else if _, ok := msg.(terminal.ExitMsg); ok {
 			break
 		}
