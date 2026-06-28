@@ -2708,7 +2708,20 @@ func (m *Model) nextStatus(current board.TicketStatus) board.TicketStatus {
 		return board.StatusInProgress
 	case board.StatusInProgress:
 		return board.StatusDone
+	case board.StatusDone:
+		// Forward from Done advances to Archived (the natural "clean up
+		// finished work" step). Previously this fell into `default:` and
+		// returned current, making the keyboard handler in quickMoveTicket
+		// short-circuit on `nextStatus == ticket.Status` and silently do
+		// nothing — users reported the Done column tickets couldn't move.
+		// The state machine (board.CanTransitionTo, SYSTEM_DESIGN.md §3
+		// row `done → archived | ✅ | 归档`) explicitly allows this.
+		// Archived is filtered out of the visible columns by design
+		// (see model.go refreshColumnTickets), so the ticket disappears
+		// after the move — that is the intended UX.
+		return board.StatusArchived
 	default:
+		// StatusArchived (and any future status): terminal, no-op.
 		return current
 	}
 }
