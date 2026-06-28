@@ -191,7 +191,6 @@ func (m *Model) renderColumn(col board.Column, tickets []*board.Ticket, isActive
 	columnIcons := map[board.TicketStatus]string{
 		board.StatusBacklog:    "📋",
 		board.StatusInProgress: "⚡",
-		board.StatusDone:       "✅",
 	}
 	icon := columnIcons[col.Status]
 	if icon == "" {
@@ -260,9 +259,6 @@ func (m *Model) renderColumn(col board.Column, tickets []*board.Ticket, isActive
 		if col.Status == board.StatusBacklog {
 			emptyIcon = "+"
 			emptyText = "Press n to add a ticket"
-		} else if col.Status == board.StatusDone {
-			emptyIcon = "✓"
-			emptyText = "Finished tickets land here"
 		}
 		emptyStyle := lipgloss.NewStyle().
 			Foreground(m.colors.muted).
@@ -1685,8 +1681,6 @@ func (m *Model) columnColor(status board.TicketStatus) lipgloss.Color {
 		return m.colors.primary
 	case board.StatusInProgress:
 		return m.colors.warning
-	case board.StatusDone:
-		return m.colors.success
 	default:
 		return m.colors.muted
 	}
