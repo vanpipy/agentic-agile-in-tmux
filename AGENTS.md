@@ -244,7 +244,7 @@ PTY management + terminal emulation. For internals, read `internal/terminal/pane
 
 ### 5.5 Ticket State Machine
 
-Ticket status transitions are validated by `Ticket.CanTransitionTo(target TicketStatus) error` in `internal/board/board.go`. The state machine:
+Ticket status transitions are validated by `Ticket.CanTransitionTo(target TicketStatus) error` in `internal/board/board.go`. The state machine (2026-06-28 simplification — was 4 states, now 2):
 
 ```
               ┌─────────────────────────────┐
@@ -255,11 +255,10 @@ backlog ⇄ in_progress ──► done ─────────────�
                               (terminal)
 ```
 
-- **`backlog` ⇄ `in_progress`**: allowed in both directions. `in_progress → backlog` with `AgentStatus == AgentWorking` is BLOCKED (would orphan the running pi).
-- **`in_progress` → `done`**: allowed; marks `CompletedAt`.
-- **`done` → `backlog` or `done` → `in_progress`**: allowed (user reopens/restarts).
-- **Any → `archived`**: allowed.
-- **`archived` → ***: FORBIDDEN (archived is terminal). `archived → archived` is a no-op.
+- **`backlog` ⇄ `in_progress`**: allowed in both directions. `in_progress → backlog` with `AgentStatus == AgentWorking` is BLOCKED by the UI-layer guard (would orphan the running pi).
+- **No terminal state**: when the user judges a ticket done, they press `d` to delete (worktree + branch + ticket). The state machine has no "done" or "archived" state.
+- **Same-status**: no-op (does not move `StartedAt` or `UpdatedAt`).
+- **Data compat**: tickets with `status == "done"` or `"archived"` in old JSONL files are silently dropped on load (breaking change accepted by user).
 
 UI surfaces rejections via the existing notification toast:
 ```go
