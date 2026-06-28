@@ -61,6 +61,14 @@ const (
 // Used to filter out "(devel)" and other Go debug.BuildInfo noise.
 var semverLike = regexp.MustCompile(`^v?\d+\.\d+\.\d+`)
 
+// pseudoVersionRE matches Go module pseudo-versions, which have the form
+// "X.Y.Z-0.YYYYMMDDHHMMSS-<sha>" or "vX.Y.Z-pre.N.YYYYMMDDHHMMSS-<sha>".
+// The 14-digit timestamp is the disambiguator. We exclude these from the
+// BuildInfo fallback because they're Go's internal mechanism for dev
+// builds, not a real release version — leaking them through makes
+// `awp --version` on a `make build` binary look like a tagged release.
+var pseudoVersionRE = regexp.MustCompile(`\d{8,}`)
+
 // --- Public resolvers (fallback chain: ldflags → BuildInfo → default) ---
 
 // Version returns the build's logical version.
@@ -106,7 +114,9 @@ func resolveVersion(ld string, bi *debug.BuildInfo) string {
 	if ld != ldSentinelVersion {
 		return ld
 	}
-	if bi != nil && semverLike.MatchString(bi.Main.Version) {
+	if bi != nil &&
+		semverLike.MatchString(bi.Main.Version) &&
+		!pseudoVersionRE.MatchString(bi.Main.Version) {
 		return strings.TrimPrefix(bi.Main.Version, "v")
 	}
 	return ldSentinelVersion

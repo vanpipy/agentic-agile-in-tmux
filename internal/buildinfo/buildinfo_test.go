@@ -66,6 +66,24 @@ func TestResolveVersion(t *testing.T) {
 			bi:   &debug.BuildInfo{Main: debug.Module{Version: "v1.0.0-rc.1"}},
 			want: "1.0.0-rc.1",
 		},
+		{
+			// Go's pseudo-version (e.g. from `make build` without
+			// ldflags, or `go install` on a non-tagged commit) has
+			// the form X.Y.Z-0.YYYYMMDDHHMMSS-<sha>. A dev build
+			// should not be reported as a real version — it leaks
+			// Go module internals and looks like a release tag.
+			// The resolver must fall through to the dev sentinel.
+			name: "go pseudo-version falls through to default",
+			ld:   "0.0.0-dev",
+			bi:   &debug.BuildInfo{Main: debug.Module{Version: "0.1.1-0.20260628084246-c82a5e55c1b9"}},
+			want: "0.0.0-dev",
+		},
+		{
+			name: "go pseudo-version with v prefix falls through to default",
+			ld:   "0.0.0-dev",
+			bi:   &debug.BuildInfo{Main: debug.Module{Version: "v0.1.1-0.20260628084246-c82a5e55c1b9"}},
+			want: "0.0.0-dev",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
