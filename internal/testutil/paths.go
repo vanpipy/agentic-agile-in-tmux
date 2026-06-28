@@ -43,17 +43,3 @@ func RepoPath(t *testing.T, parts ...string) string {
 	t.Helper()
 	return filepath.Join(RepoRoot(t), filepath.Join(parts...))
 }
-
-// ProjectFile returns the absolute path to a file in the project
-// tree, where the caller's location determines what "relative"
-// means. The test file lives in test/<sub>/<name>_test.go; the
-// returned path is computed by walking up from the test file to
-// the project root and then joining the relative parts.
-//
-// Use this when the file is part of the awp repo (e.g. test fixtures
-// in internal/.../testdata/) and you want a path that works no
-// matter where the test is run from.
-func ProjectFile(t *testing.T, relativeToRepo ...string) string {
-	t.Helper()
-	return RepoPath(t, relativeToRepo...)
-}
