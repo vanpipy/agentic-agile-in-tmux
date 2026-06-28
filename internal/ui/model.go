@@ -2575,7 +2575,15 @@ func (m *Model) prepareSpawn(ticket *board.Ticket, proj *project.Project) tea.Cm
 				// against the ticket before passing to pi — otherwise
 				// pi receives the raw template (e.g. "Title: {{.Title}}")
 				// instead of the actual ticket data.
-				rendered, err := renderInitPrompt(cfg.Pi.InitPrompt, ticket)
+				//
+				// Pass the EFFECTIVE branchName/baseBranch/worktreePath
+				// (the values awp is about to use, not the ticket's
+				// possibly-stale persisted values). Without this, a new
+				// ticket with ticket.BranchName=="" would render
+				// {{.BranchName}} as empty even though awp just
+				// generated "task/<slug>" — pi then sees a misleading
+				// system prompt (regression-tested in init_prompt_test.go).
+				rendered, err := renderInitPrompt(cfg.Pi.InitPrompt, ticket, branchName, baseBranch, worktreePath)
 				if err != nil {
 					return spawnErrorMsg{ticketID: ticketID, err: "render init prompt: " + err.Error()}
 				}
@@ -2900,21 +2908,56 @@ func tickAgentStatus(d time.Duration) tea.Cmd {
 // against the ticket, returning the rendered string.
 //
 // Variables available in the template:
-//   - .Title       — ticket title
-//   - .Description — ticket description
-//   - .BranchName  — generated branch (may be empty for new sessions)
-//   - .BaseBranch  — base branch the worktree was forked from
+//
+//   - .Title            — ticket title
+//   - .Description      — ticket description
+//   - .BranchName       — EFFECTIVE branch name (the one awp will
+//                         actually use to create the worktree; for
+//                         a new ticket this is the slugified title
+//                         with the configured prefix, NOT whatever
+//                         happens to be persisted on ticket.BranchName)
+//   - .BaseBranch       — EFFECTIVE base branch (git default, or
+//                         whatever the user pinned on the ticket)
+//   - .WorktreePath     — EFFECTIVE worktree path (the directory
+//                         pi will be started in)
+//
+// All other fields on board.Ticket are also accessible by name
+// (Status, Priority, Labels, ID, ProjectID, CreatedAt, PiModel,
+// PiState, etc. — see internal/board/board.go for the full list).
+//
+// BranchName/BaseBranch/WorktreePath are passed in explicitly
+// rather than read from ticket.* because they may have been
+// generated during prepareSpawn (e.g. from the title slug) and
+// not yet persisted back onto the ticket. Rendering against a
+// shallow clone with the effective values substituted gives pi
+// the same context the user sees in the awp UI.
 //
 // If the template fails to parse or execute, the error is returned
 // so the spawn flow surfaces it as a spawnErrorMsg (rather than
 // silently passing a broken prompt to pi).
-func renderInitPrompt(tmplStr string, ticket *board.Ticket) (string, error) {
+func renderInitPrompt(tmplStr string, ticket *board.Ticket, branchName, baseBranch, worktreePath string) (string, error) {
+	// Shallow-clone the ticket so we don't mutate the caller's
+	// struct (which may be the live pointer in GlobalTicketStore
+	// and shared with the bubble tea Update loop). Substituting
+	// effective values here keeps the rendered prompt in sync with
+	// the worktree awp is actually about to create.
+	view := *ticket
+	if branchName != "" {
+		view.BranchName = branchName
+	}
+	if baseBranch != "" {
+		view.BaseBranch = baseBranch
+	}
+	if worktreePath != "" {
+		view.WorktreePath = worktreePath
+	}
+
 	tmpl, err := template.New("init").Option("missingkey=zero").Parse(tmplStr)
 	if err != nil {
 		return "", fmt.Errorf("parse template: %w", err)
 	}
 	var buf strings.Builder
-	if err := tmpl.Execute(&buf, ticket); err != nil {
+	if err := tmpl.Execute(&buf, &view); err != nil {
 		return "", fmt.Errorf("execute template: %w", err)
 	}
 	return buf.String(), nil
