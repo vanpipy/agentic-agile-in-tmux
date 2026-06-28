@@ -269,6 +269,13 @@ func TestDefaultColumns(t *testing.T) {
 		if columns[i].Color == "" {
 			t.Errorf("columns[%d].Color should not be empty", i)
 		}
+		if columns[i].Limit != 0 {
+			t.Errorf("columns[%d] (%s) Limit = %d; want 0 (no per-column cap).\n"+
+				"Per design decision 2026-06-28: no column has a hard ticket-count limit.\n"+
+				"WIP-limit UX was the old '3 active tasks' rule; removed because\n"+
+				"users hit it artificially and the count formatting was confusing.",
+				i, columns[i].Name, columns[i].Limit)
+		}
 	}
 }
 
