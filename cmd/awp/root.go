@@ -27,17 +27,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// version is the logical awp version. For full version info (commit
-// hash, build date), use buildinfo.String() (see versionCmd below).
-//
-// Note: there are TWO version sources:
-//   - This `version` constant: used by observability.Debug for structured logging
-//   - buildinfo.String(): used by `awp version` command (commit + build date)
-//
-// They are intentionally separate: the constant is hardcoded for dev builds
-// while buildinfo is populated at compile time via -ldflags.
-const version = "0.0.0-dev"
-
 // debug is a global --debug flag. Read by all subcommands.
 var debug bool
 
@@ -49,7 +38,7 @@ var rootCmd = &cobra.Command{
 each in its own git worktree, observed and steered from a single interface.
 
 See SYSTEM_DESIGN.md for the full design specification.`,
-	Version: version,
+	Version: buildinfo.Version,
 	// Phase 2: no-arg `awp` launches the TUI
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runTUI()
@@ -379,7 +368,7 @@ func init() {
 	rootCmd.PersistentFlags().BoolVar(&debug, "debug", false, "Enable debug logging to stderr")
 	rootCmd.PersistentPreRun = func(cmd *cobra.Command, args []string) {
 		observability.Init(debug)
-		observability.Debug("awp starting", "version", version, "args", os.Args[1:])
+		observability.Debug("awp starting", "version", buildinfo.Version, "args", os.Args[1:])
 	}
 	projectCmd.AddCommand(projectNewCmd, projectListCmd, projectDeleteCmd)
 	ticketCmd.AddCommand(ticketListCmd)
