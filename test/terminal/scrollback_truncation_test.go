@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/pi/awp/internal/terminal"
+	testutil "github.com/pi/awp/internal/testutil"
 )
 
 // TestScrollback_NoLineLoss_2LineChunks reproduces a bug where
@@ -17,7 +18,7 @@ import (
 //
 // User reported: "滚动了一定高度后只剩下 1, 3, 5"
 func TestScrollback_NoLineLoss_2LineChunks(t *testing.T) {
-	mockPath := "/tmp/multi_pi.sh"
+	mockPath := testutil.RepoPath(t, "internal", "pi", "testdata", "scrollback_multi.sh")
 
 	pane := terminal.New("test", 80, 5, 1000)
 	pane.SetWorkdir(t.TempDir())
