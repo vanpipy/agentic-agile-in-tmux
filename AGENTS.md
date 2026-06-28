@@ -106,6 +106,79 @@ Action-oriented, no overlap with §2 or with `constitution.md`.
 5. **Still no answer** → write an issue-style markdown, **stop and ask**. Don't guess.
 6. **Tempted to "simplify"** → re-read §2.1, confirm you're not violating completeness.
 
+### 4.5 Release
+
+The release pipeline (`make release VERSION=x.y.z`) is the only blessed
+way to publish a new awp version. It runs four pre-flight checks, then
+creates an annotated tag, pushes it to `origin`, and rebuilds the
+binary with `-ldflags`-injected metadata.
+
+#### Contract
+
+| Check | Implementation | Why |
+|---|---|---|
+| Valid semver | `internal/release.ValidateSemver` | Tag name must be unambiguous and machine-parseable for `internal/update.go` |
+| Clean working tree | `internal/release.AssertGitClean` | Avoid baking WIP into the release commit; the tag points at HEAD |
+| On `main` branch | `internal/release.AssertOnBranch` | No accidental releases from feature or hotfix branches |
+| Tag absent | `internal/release.AssertTagAbsent` | No re-tagging of an old release (use a new version instead) |
+
+The four checks live in `internal/release/` and run via
+`cmd/releasecheck/main.go` (`go run ./cmd/releasecheck VERSION main`).
+Exit `0` = green, `1` = check failed, `2` = usage error. Make stops on
+any non-zero exit. The same binary is reusable by a future CI workflow
+without re-implementing checks — that's why the checks live in Go, not
+in Makefile shell.
+
+#### Tag naming
+
+`vX.Y.Z` (or `vX.Y.Z-prerelease+build`), always with the `v` prefix.
+`internal/update.go` calls `strings.TrimPrefix("v", …)` before
+comparing, so `v0.1.0` and `0.1.0` are treated as the same version,
+but the tag itself must have the prefix to match the `BuildTag()`
+contract.
+
+#### Manual step after `make release`
+
+`make release` does NOT create a GitHub Release. The `internal/update`
+self-check queries `api.github.com/repos/<owner>/<repo>/releases/latest`
+and only sees tags that have been promoted to a Release. After
+`make release`, manually:
+
+```bash
+gh release create v$(VERSION) --generate-notes
+```
+
+Without this step, `awp` users on the previous version won't see the
+update notice.
+
+#### Version source of truth
+
+Versions come from `internal/buildinfo` (`Version`, `Commit`,
+`BuildDate`), injected via `-ldflags` at build time. **Do not** add a
+local `const version` in `cmd/awp/` — the audit_2026_06_27 NOSE-1
+finding showed that two version sources (const + ldflags) diverge in
+release builds, breaking user-side diagnostics. `cmd/awp/root.go`
+references `buildinfo.Version` twice (cobra `Version` field +
+`observability.Debug` log key) and the test
+`cmd/awp/version_source_test.go` pins this contract. A regression that
+re-introduces `const version = "..."` fails both that test and the
+runtime check.
+
+#### Semver policy
+
+- Pre-1.0 (`0.x.y`): minor bump is a breaking-change candidate; patch
+  is a bug fix. Treat `0.x` as "anything goes, but document loudly".
+- Post-1.0: follow semver 2.0.0 strictly.
+
+#### Why no CI for releases (yet)
+
+The repo has no `.github/workflows/release.yml` by design — releases
+are manual and gate on a human doing the GitHub Release step that
+`internal/update` depends on. Adding CI would also require automatic
+GitHub Release creation, which makes the pipeline opaque (the human
+review step disappears). Revisit when release frequency exceeds
+~1/month or when a non-maintainer needs to cut a release.
+
 ---
 
 ## 5. Technical Anchors

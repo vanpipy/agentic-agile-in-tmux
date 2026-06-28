@@ -91,6 +91,57 @@ cd internal/pi/extension && bun test  # TypeScript extension
 
 Read `AGENTS.md` (design rules) and `SYSTEM_DESIGN.md` before changing code. Update the design doc first. TDD: red → green → refactor.
 
+## Releasing
+
+The release pipeline lives in the `Makefile`. One command runs the full
+flow — validate, tag, push, build:
+
+```bash
+make release VERSION=0.1.0   # validate → tag → push to origin → build
+```
+
+### Pre-flight (auto)
+
+`make release` refuses to proceed unless **all** of these hold:
+
+- `VERSION` is a valid semver (e.g. `0.1.0`, `v1.2.3-rc.1`).
+- The working tree is clean (`git status --porcelain` is empty).
+- You are on `main` (no accidental releases from feature branches).
+- The tag does not already exist (no re-tagging of old releases).
+
+These checks live in `cmd/releasecheck` (Go, unit-tested) and run via
+`go run ./cmd/releasecheck $(VERSION) main`. Exit `0` = green; any
+non-zero stops the Makefile target.
+
+### After `make release`
+
+1. The annotated tag `v$(VERSION)` is pushed to `origin`.
+2. The local binary is rebuilt with `-ldflags`-injected metadata
+   (`buildinfo.Version`, `Commit`, `BuildDate`).
+3. **Manual step**: convert the GitHub tag into a Release with notes,
+   because `internal/update` checks
+   `api.github.com/repos/<owner>/<repo>/releases/latest` to detect new
+   versions. A bare tag won't show up in update checks.
+
+```bash
+gh release create v0.1.0 --generate-notes
+```
+
+### Offline / dry-run
+
+If you cannot push (no credentials, working offline) or want to verify
+the pipeline locally:
+
+```bash
+make release-local VERSION=0.1.0   # validate → tag → build (no push)
+```
+
+The local tag remains; delete with `git tag -d v0.1.0` after you've
+confirmed behavior.
+
+Full release rules (tag naming, semver policy, version source of truth)
+are in `AGENTS.md` §4.5.
+
 ## Status
 
 All 6 phases complete. Audit 94/100 (0 critical, 0 major), 357 tests, 68% coverage, `go vet` clean, 16M binary.
