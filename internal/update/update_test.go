@@ -17,7 +17,12 @@ func TestUpdateHint(t *testing.T) {
 		want   string
 	}{
 		{"homebrew", InstallHomebrew, "brew upgrade awp"},
-		{"go install", InstallGo, "go install github.com/pi/awp@latest"},
+		// Bug A fix: the go install hint must reference githubRepo
+		// (the actual repository owner/name), not a hardcoded path
+		// from before githubRepo was centralized. See also
+		// TestUpdateHint_GoInstallNotStalePath for the negative
+		// assertion that catches the old hardcoded path.
+		{"go install", InstallGo, "go install github.com/" + githubRepo + "@latest"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -26,6 +31,22 @@ func TestUpdateHint(t *testing.T) {
 				t.Errorf("UpdateHint(%s) = %q; want %q", tt.name, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestUpdateHint_GoInstallNotStalePath pins Bug A: the go install
+// hint must reference the actual repo (githubRepo var) and must not
+// contain the stale hardcoded "github.com/pi/awp" path. A user
+// following the hint would otherwise try to `go install` a module
+// path that doesn't exist or doesn't correspond to this repo.
+func TestUpdateHint_GoInstallNotStalePath(t *testing.T) {
+	r := CheckResult{InstallMethod: InstallGo}
+	hint := r.UpdateHint()
+	if !strings.Contains(hint, "github.com/"+githubRepo) {
+		t.Errorf("UpdateHint() = %q; want it to contain github.com/%s", hint, githubRepo)
+	}
+	if strings.Contains(hint, "github.com/pi/awp") {
+		t.Errorf("UpdateHint() = %q; must not reference stale path github.com/pi/awp", hint)
 	}
 }
 

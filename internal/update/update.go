@@ -48,7 +48,7 @@ func (r CheckResult) UpdateHint() string {
 	case InstallHomebrew:
 		return "brew upgrade awp"
 	case InstallGo:
-		return "go install github.com/pi/awp@latest"
+		return "go install github.com/" + githubRepo + "@latest"
 	default:
 		return r.ReleaseURL
 	}
