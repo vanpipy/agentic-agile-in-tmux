@@ -6,11 +6,38 @@ Pi only. No multi-agent abstraction, no screen scraping. Built on pi's `--mode r
 
 ## Install
 
+### Latest release
+
 ```bash
-go install github.com/pi/awp@latest
+go install github.com/vanpipy/agentic-with-pi@latest
 ```
 
-Requires `pi` on `$PATH`.
+`go install` doesn't pass our `-ldflags`, but awp's version metadata
+falls back to `runtime/debug.BuildInfo`, so `awp version` still shows
+the correct tag/commit/build-date on the installed binary.
+
+### From a local checkout (development)
+
+```bash
+git clone https://github.com/vanpipy/agentic-with-pi
+cd agentic-with-pi
+
+make install                        # dev build → $GOPATH/bin/awp
+# or
+make release-local VERSION=0.1.0    # ldflags-injected → ./awp
+```
+
+`make install` runs `make build` (no `-ldflags`) and copies the binary
+to `$GOPATH/bin/awp` so `awp` is on `$PATH`. `make release-local`
+builds a versioned binary with `-ldflags` injected into `buildinfo.*`,
+saved as `./awp` in the repo root — copy it yourself if you want it on
+`$PATH`.
+
+### Requirements
+
+- `go` (1.21+)
+- `git`
+- `pi` on `$PATH` (the TUI spawns `pi --mode rpc` per ticket)
 
 ## First Run
 
