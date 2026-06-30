@@ -56,6 +56,22 @@ func LatestSessionJSONL(cwd string) (string, error) {
 // passed explicitly instead of being computed from cwd + $HOME.
 // Keeping them separate lets unit tests avoid touching HOME.
 func latestJSONLInDir(dir string) (string, error) {
+	// CASTRATION-2 follow-up: refuse to walk a dir that resolves
+	// outside the user's HOME. Mirrors the defense in buildIndex
+	// (session.go:407). If an attacker replaces the session dir
+	// with a symlink to /tmp/ or some other writable dir, we
+	// return "" rather than walk it. Information disclosure only
+	// (we never write), but the asymmetry with buildIndex would
+	// be a code smell — future write paths through this helper
+	// would inherit the leak.
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return "", errors.New("cannot determine HOME for session dir safety check")
+	}
+	if !isUnderHome(dir, home) {
+		return "", nil
+	}
+
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {

@@ -493,9 +493,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-	case paneTurnDoneMsg:
-		m.handlePaneTurnDone(msg)
-
 	case pollTurnDonesMsg:
 		for _, fire := range msg.fires {
 			m.handlePaneTurnDone(fire)
