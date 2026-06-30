@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"sync"
 	"text/template"
 	"strings"
 	"time"
@@ -130,6 +131,14 @@ type Model struct {
 
 	panes          map[board.TicketID]*terminal.Pane
 	focusedPane    board.TicketID
+
+	// turnDoneCaches tracks the per-pane JSONL-tail state for the
+	// per-turn notification path (PR 2). Keyed by ticketID.
+	// sync.Map because the poll goroutine reads and (rarely) writes
+	// while the Update goroutine may also access on cleanup; we don't
+	// want a separate mutex here. Cache itself has its own mutex
+	// (TurnDoneCache.mu) so concurrent field reads are safe.
+	turnDoneCaches sync.Map
 
 	spawningTicketID board.TicketID
 
@@ -322,6 +331,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case agentStatusMsg:
 			return m, tea.Batch(
 				m.pollAgentStatusesAsync(),
+				m.pollTurnDonesAsync(),
 				tickAgentStatus(5 * time.Second),
 			)
 		case spawnReadyMsg:
@@ -470,6 +480,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case agentStatusMsg:
 		return m, tea.Batch(
 			m.pollAgentStatusesAsync(),
+			m.pollTurnDonesAsync(),
 			tickAgentStatus(5 * time.Second),
 		)
 
@@ -478,6 +489,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if ticket, _ := m.globalStore.Get(ticketID); ticket != nil {
 				ticket.AgentStatus = status
 			}
+		}
+
+	case paneTurnDoneMsg:
+		m.handlePaneTurnDone(msg)
+
+	case pollTurnDonesMsg:
+		for _, fire := range msg.fires {
+			m.handlePaneTurnDone(fire)
 		}
 
 	case spinner.TickMsg:
@@ -2774,6 +2793,27 @@ func (m *Model) notifyExit(ticketID board.TicketID, exitErr error, wasFocused bo
 	m.notify(msg)
 }
 
+// handlePaneTurnDone is called from Update when pollTurnDonesAsync
+// emits a paneTurnDoneMsg (PR 2 of task/awp). The poll loop has
+// already done the heavy lifting: detected a "toolUse → stop"
+// transition in pi's session JSONL and applied the focus filter —
+// the handler here just decides what to put in the toast.
+//
+// Focus policy: if msg.paneID equals the currently-focused pane,
+// the user can already see the state; do NOT spam them with a toast.
+// Anything else (different pane, no focus at all) gets a toast with
+// the ticket title (or ticket ID as fallback if the title is empty).
+func (m *Model) handlePaneTurnDone(msg paneTurnDoneMsg) {
+	if string(m.focusedPane) == msg.paneID {
+		return
+	}
+	title := msg.title
+	if title == "" {
+		title = string(msg.ticketID)
+	}
+	m.notify(title + " finished a turn")
+}
+
 func (m *Model) saveTicket(ticket *board.Ticket) {
 	if err := m.globalStore.Save(ticket); err != nil {
 		m.notify("Failed to save: " + err.Error())
@@ -2892,6 +2932,126 @@ func (m *Model) pollAgentStatusesAsync() tea.Cmd {
 	}
 }
 
+// pollTurnDonesAsync — PR 2 of task/awp. Companion to
+// pollAgentStatusesAsync: runs in a goroutine every 5 s (via the
+// same tickAgentStatus cycle), checks each running pane's pi session
+// JSONL for a "toolUse → stop" transition, and emits a
+// paneTurnDoneMsg for every transition found.
+//
+// The actual heavy lifting (file stat, JSONL parse, edge detection)
+// lives in this closure, NOT in Update. Update only sees a flat
+// list of "this pane just finished a turn" events.
+//
+// Caching: per-pane state is held in m.turnDoneCaches (sync.Map).
+// The cache itself has its own mutex, so concurrent access from this
+// goroutine and any Update handler is safe.
+func (m *Model) pollTurnDonesAsync() tea.Cmd {
+	type paneSnap struct {
+		ticketID     board.TicketID
+		paneID       string
+		title        string
+		worktreePath string
+		running      bool
+	}
+
+	var snaps []paneSnap
+	for ticketID, pane := range m.panes {
+		if !pane.Running() {
+			continue
+		}
+		ticket, _ := m.globalStore.Get(ticketID)
+		if ticket == nil {
+			continue
+		}
+		worktreePath := pane.GetWorkdir()
+		if worktreePath == "" {
+			worktreePath = ticket.WorktreePath
+		}
+		snaps = append(snaps, paneSnap{
+			ticketID:     ticketID,
+			paneID:       string(ticketID),
+			title:        ticket.Title,
+			worktreePath: worktreePath,
+			running:      true, // pane.Running() was true above
+		})
+	}
+
+	return func() tea.Msg {
+		var fires []paneTurnDoneMsg
+		for _, s := range snaps {
+			jsonlPath, err := pi.LatestSessionJSONL(s.worktreePath)
+			if err != nil || jsonlPath == "" {
+				continue // pi hasn't created the session yet — skip
+			}
+
+			// Get-or-init the per-pane cache. Two-phase pattern using
+			// sync.Map:
+			//   1. LoadOrStore(_, nil) — fast "is there a cache?" probe
+			//      that inserts a sentinel placeholder if not.
+			//   2. If miss: build a fresh cache from disk and try
+			//      LoadOrStore again. If THIS loses to another poll,
+			//      discard the freshly-built one and use the winner.
+			// The cache itself has its own mutex so concurrent field
+			// access is safe regardless of which cache object "wins".
+			cacheI, _ := m.turnDoneCaches.LoadOrStore(s.ticketID, nil)
+			var cache *pi.TurnDoneCache
+			if cacheI == nil {
+				fresh, ferr := pi.NewTurnDoneCacheFromFile(jsonlPath)
+				if ferr != nil || fresh == nil {
+					continue
+				}
+				actual, loaded := m.turnDoneCaches.LoadOrStore(s.ticketID, fresh)
+				cache = actual.(*pi.TurnDoneCache)
+				if loaded {
+					_ = fresh // another poll beat us; discard our copy
+				}
+			} else {
+				cache = cacheI.(*pi.TurnDoneCache)
+			}
+			if cache == nil {
+				continue
+			}
+
+			stat, err := os.Stat(cache.Path())
+			if err != nil {
+				continue // file gone (rotated?) — next poll will pick up new path
+			}
+			if !cache.IsStale(stat.ModTime(), stat.Size()) {
+				continue // unchanged; skip the parse
+			}
+
+			sr, err := pi.DetectLastStopReason(cache.Path())
+			if err != nil {
+				continue
+			}
+			if cache.Update(sr, stat.Size(), stat.ModTime()) {
+				fires = append(fires, paneTurnDoneMsg{
+					ticketID: s.ticketID,
+					paneID:   s.paneID,
+					title:    s.title,
+				})
+			}
+		}
+		if len(fires) == 0 {
+			return nil
+		}
+		// Wrap multiple fires into a single Msg so the dispatch path
+		// stays cheap. Update iterates and calls handlePaneTurnDone
+		// per fire. We could also return fires[0] and chain the rest
+		// via tea.Batch, but a single Msg is simpler and 10 fires
+		// at once is fine for the toast queue (view.go:471 only
+		// shows the latest one anyway).
+		return pollTurnDonesMsg{fires: fires}
+	}
+}
+
+// pollTurnDonesMsg is the per-cycle batch of turn-done events from
+// pollTurnDonesAsync. A single Msg carries all events from one poll
+// so we don't fan out N tea.Cmd back-to-back.
+type pollTurnDonesMsg struct {
+	fires []paneTurnDoneMsg
+}
+
 // piStateToAgentStatus translates pi's JSONL-driven PiState into the
 // legacy AgentStatus enum the TUI uses for display. Both are
 // defined in internal/board.
@@ -2927,6 +3087,16 @@ type agentStatusResultMsg map[board.TicketID]board.AgentStatus
 type notificationMsg time.Time
 type shutdownCompleteMsg struct{}
 type updateCheckMsg update.CheckResult
+
+// paneTurnDoneMsg fires when the poll loop detects a "toolUse → stop"
+// transition in a non-focused pane's pi session JSONL. PR 2 of
+// task/awp. The handler converts this into a TUI toast subject to
+// the focus policy (focused pane is silent).
+type paneTurnDoneMsg struct {
+	ticketID board.TicketID
+	paneID   string
+	title    string
+}
 
 type spawnReadyMsg struct {
 	ticketID     board.TicketID
