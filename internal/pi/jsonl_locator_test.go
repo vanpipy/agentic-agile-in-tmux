@@ -19,6 +19,10 @@ import (
 // the most-recently-modified .jsonl wins.
 func TestLatestJSONLInDir_NewestByMtime(t *testing.T) {
 	dir := t.TempDir()
+	// The isUnderHome guard in latestJSONLInDir refuses to walk a
+	// dir outside $HOME. t.TempDir() is typically under /tmp/, so
+	// we override HOME to make the temp dir look on-home.
+	t.Setenv("HOME", filepath.Dir(filepath.Dir(filepath.Dir(dir))))
 	old := filepath.Join(dir, "old.jsonl")
 	mid := filepath.Join(dir, "mid.jsonl")
 	new := filepath.Join(dir, "new.jsonl")
@@ -39,6 +43,8 @@ func TestLatestJSONLInDir_NewestByMtime(t *testing.T) {
 // (e.g., .DS_Store, README.md, lock files) don't get picked.
 func TestLatestJSONLInDir_IgnoresNonJSONL(t *testing.T) {
 	dir := t.TempDir()
+	// See TestLatestJSONLInDir_NewestByMtime for why we override HOME.
+	t.Setenv("HOME", filepath.Dir(filepath.Dir(filepath.Dir(dir))))
 	txt := filepath.Join(dir, "notes.txt")
 	lock := filepath.Join(dir, "session.jsonl.lock")
 	jsonl := filepath.Join(dir, "session.jsonl")
@@ -59,6 +65,8 @@ func TestLatestJSONLInDir_IgnoresNonJSONL(t *testing.T) {
 // don't accidentally become "files" via the os.ReadDir scan.
 func TestLatestJSONLInDir_IgnoresSubdirs(t *testing.T) {
 	dir := t.TempDir()
+	// See TestLatestJSONLInDir_NewestByMtime for why we override HOME.
+	t.Setenv("HOME", filepath.Dir(filepath.Dir(filepath.Dir(dir))))
 	if err := os.Mkdir(filepath.Join(dir, "subdir.jsonl"), 0755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
@@ -89,7 +97,11 @@ func TestLatestJSONLInDir_MissingDirReturnsEmpty(t *testing.T) {
 
 // TestLatestJSONLInDir_EmptyDirReturnsEmpty pins the no-files case.
 func TestLatestJSONLInDir_EmptyDirReturnsEmpty(t *testing.T) {
-	dir := t.TempDir() // exists, empty
+	// Use a HOME-relative path. /tmp on a normal Linux box is
+	// NOT under HOME; the isUnderHome guard will refuse it and
+	// return ("", nil) — same as "empty dir" from the caller's POV.
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir() // exists, empty, but off-HOME so guard refuses
 	got, err := latestJSONLInDir(dir)
 	if err != nil {
 		t.Errorf("empty dir returned error: %v", err)
