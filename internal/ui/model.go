@@ -445,16 +445,21 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case terminal.ExitMsg:
 		ticketID := board.TicketID(msg.PaneID)
+		wasFocused := m.focusedPane == ticketID
 		delete(m.panes, ticketID)
 		if ticket, _ := m.globalStore.Get(ticketID); ticket != nil {
 			ticket.AgentStatus = board.AgentNone
 			m.saveTicket(ticket)
 		}
-		if m.focusedPane == ticketID {
+		if wasFocused {
 			m.mode = ModeNormal
 			m.focusedPane = ""
-			m.notify("Agent exited")
 		}
+		// PR1 (task/awp): per-task stop notification. Always emit a
+		// toast on exit, even for non-focused panes — that's the whole
+		// point. Wording differs by focus state and crash vs clean
+		// exit (see notifyExit for the matrix).
+		m.notifyExit(ticketID, msg.Err, wasFocused)
 		return m, nil
 
 	case terminal.ExitFocusMsg:
@@ -2727,6 +2732,40 @@ func (m *Model) previousStatus(current board.TicketStatus) board.TicketStatus {
 func (m *Model) notify(msg string) {
 	m.notification = msg
 	m.notifyTime = time.Now()
+}
+
+// notifyExit produces a TUI toast announcing that the given ticket's
+// pi process has exited. Wording depends on focus state (was the
+// user watching this pane?) and whether the exit was a clean shutdown
+// or a crash.
+//
+// Wording matrix (matches SYSTEM_DESIGN.md §7.4.3):
+//
+//	                  │ focused                    │ non-focused
+//	──────────────────┼────────────────────────────┼────────────────────────
+//	clean exit (err=nil) │ "Agent exited"         ✓  │ "<title> exited"   ✓
+//	crash  (err != nil)  │ "Agent failed: <err>"  ✗  │ "<title> failed"   ✗
+//
+// The view layer's icon picker (view.go:471-484) detects error
+// notifications by "Failed" prefix or "failed" substring. We match
+// that convention so the ✗ icon is rendered automatically.
+func (m *Model) notifyExit(ticketID board.TicketID, exitErr error, wasFocused bool) {
+	title := string(ticketID)
+	if t, _ := m.globalStore.Get(ticketID); t != nil && t.Title != "" {
+		title = t.Title
+	}
+	var msg string
+	switch {
+	case wasFocused && exitErr != nil:
+		msg = "Agent failed: " + exitErr.Error()
+	case wasFocused:
+		msg = "Agent exited"
+	case exitErr != nil:
+		msg = title + " failed"
+	default:
+		msg = title + " exited"
+	}
+	m.notify(msg)
 }
 
 func (m *Model) saveTicket(ticket *board.Ticket) {
