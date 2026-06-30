@@ -1420,14 +1420,31 @@ func (p *Pane) renderLiveRow(cols, row int, logicalRow int) string {
 	for col := 0; col < cols; col++ {
 		cell := p.vt.CellAt(col, row)
 
-		// Placeholder cell: skip emission, keep batch state.
-		if isPlaceholder(cell) {
+		isCursor := cursorVis && col == cursorPos.X && row == cursorPos.Y
+
+		// Placeholder cell: skip emission UNLESS the cursor lands
+		// on it. Skipping placeholders is what fixes the wide-char
+		// spacing bug (commit a6ef325), but doing so unconditionally
+		// also drops the cursor block when x/vt reports the cursor
+		// position on a placeholder — which happens after BS on a
+		// CJK char, after CUP/CUF landing on a placeholder, etc.
+		// Symptom: the cursor "disappears" and the next typed char
+		// appears out of sync (the wrong-cursor ticket).
+		if isPlaceholder(cell) && !isCursor {
 			continue
 		}
 
+		// cellRune returns 0 (NUL) for placeholder cells. The cursor
+		// block path uses the rune as the visible character, so we
+		// must substitute a space — placeholders carry no visual
+		// content of their own (they are the right half of a wide
+		// char's 2-cell footprint, occupied by the wide char to the
+		// left).
 		ch := cellRune(cell)
+		if ch == 0 {
+			ch = ' '
+		}
 
-		isCursor := cursorVis && col == cursorPos.X && row == cursorPos.Y
 		cellSelected := p.selection != nil && p.selection.Contains(Position{Row: logicalRow, Col: col})
 
 		// Style changed or selection changed? Flush batch
@@ -1493,14 +1510,23 @@ func (p *Pane) renderLiveScreenUnlocked(cols, rows int) string {
 		for col := 0; col < cols; col++ {
 			cell := p.vt.CellAt(col, row)
 
-			// Placeholder cell: skip emission, keep batch state.
-			if isPlaceholder(cell) {
+			isCursor := cursorVis && col == cursorPos.X && row == cursorPos.Y
+
+			// Placeholder cell: skip emission UNLESS the cursor lands
+			// on it. Skipping unconditionally regressed cursor
+			// visibility for the cases listed in renderLiveRow.
+			if isPlaceholder(cell) && !isCursor {
 				continue
 			}
 
+			// cellRune returns 0 (NUL) for placeholders; substitute a
+			// space when emitting the cursor block at that position
+			// so the terminal does not receive a stray NUL byte.
 			ch := cellRune(cell)
+			if ch == 0 {
+				ch = ' '
+			}
 
-			isCursor := cursorVis && col == cursorPos.X && row == cursorPos.Y
 			logicalRow := row // When not scrolled, logical row = screen row
 			cellSelected := p.selection != nil && p.selection.Contains(Position{Row: logicalRow, Col: col})
 
