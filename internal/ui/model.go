@@ -2948,8 +2948,9 @@ func (m *Model) pollAgentStatusesAsync() tea.Cmd {
 // list of "this pane just finished a turn" events.
 //
 // Caching: per-pane state is held in m.turnDoneCaches (sync.Map).
-// The cache itself has its own mutex, so concurrent access from this
-// goroutine and any Update handler is safe.
+// Each *pi.TurnDoneCache is itself goroutine-safe (sync.Mutex on
+// every method), so concurrent access from this goroutine and any
+// Update handler is safe.
 func (m *Model) pollTurnDonesAsync() tea.Cmd {
 	type paneSnap struct {
 		ticketID     board.TicketID
@@ -3016,6 +3017,10 @@ func (m *Model) pollTurnDonesAsync() tea.Cmd {
 			if cache == nil {
 				continue
 			}
+			// The cache's own sync.Mutex protects concurrent access
+			// between this goroutine and any Update handler. The
+			// sync.Map above protects the (ticketID -> cache) mapping;
+			// the cache itself protects its fields. Two layers.
 
 			stat, err := os.Stat(cache.Path())
 			if err != nil {
