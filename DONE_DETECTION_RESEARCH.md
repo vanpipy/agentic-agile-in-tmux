@@ -2,8 +2,14 @@
 
 **Ticket:** task/awp — "Scan the repository, try to find a way to detect the work has done or not"
 **Date:** 2026-06-28 (revised after clarifying user goal: per-task stop notifications)
-**Status:** Investigation complete; approach identified and stress-tested against the code;
-no code changes shipped.
+**Status:** ✅ **Implemented (PR 1 + PR 2 + cleanup merged to main on 2026-06-28 / 2026-06-30).
+   - PR 1 (3 commits): process-exit notifications — non-focused pane toasts.
+   - PR 2 (4 commits): per-turn notifications via pi session JSONL tail.
+   - Cleanup follow-up (1 commit): turnDoneCaches lifecycle pruning + nil-Msg fix.
+   See commits 980b78f, e688879, 90a9e45, c213324, 4a3dda0, 3ffc38f, 62bfc7b,
+   and the lifecycle test file `internal/ui/turn_done_cache_lifecycle_test.go`.
+   Research retained for the rationale behind decisions that diverged
+   from the original (over-engineered) design.
 
 ---
 

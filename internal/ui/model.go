@@ -398,6 +398,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if pane, ok := m.panes[m.spawningTicketID]; ok {
 					pane.Stop()
 					delete(m.panes, m.spawningTicketID)
+					m.turnDoneCaches.Delete(m.spawningTicketID)
 				}
 				m.mode = ModeNormal
 				m.spawningTicketID = ""
@@ -457,6 +458,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		ticketID := board.TicketID(msg.PaneID)
 		wasFocused := m.focusedPane == ticketID
 		delete(m.panes, ticketID)
+		m.turnDoneCaches.Delete(ticketID)
 		if ticket, _ := m.globalStore.Get(ticketID); ticket != nil {
 			ticket.AgentStatus = board.AgentNone
 			m.saveTicket(ticket)
@@ -2278,6 +2280,7 @@ func (m *Model) performTicketCleanup(ticket *board.Ticket) {
 	if pane, ok := m.panes[ticket.ID]; ok {
 		pane.Stop()
 		delete(m.panes, ticket.ID)
+		m.turnDoneCaches.Delete(ticket.ID)
 	}
 
 	proj := m.globalStore.GetProjectForTicket(ticket)
@@ -2675,6 +2678,7 @@ func (m *Model) stopAgent() (tea.Model, tea.Cmd) {
 	if pane, ok := m.panes[ticket.ID]; ok {
 		pane.Stop()
 		delete(m.panes, ticket.ID)
+		m.turnDoneCaches.Delete(ticket.ID)
 	}
 
 	ticket.AgentStatus = board.AgentNone
@@ -2837,6 +2841,7 @@ func (m *Model) resetSpawnState(ticketID board.TicketID) {
 		_ = pane.Stop()
 	}
 	delete(m.panes, ticketID)
+	m.turnDoneCaches.Delete(ticketID)
 }
 
 func (m *Model) RunningAgentCount() int {
@@ -2943,8 +2948,9 @@ func (m *Model) pollAgentStatusesAsync() tea.Cmd {
 // list of "this pane just finished a turn" events.
 //
 // Caching: per-pane state is held in m.turnDoneCaches (sync.Map).
-// The cache itself has its own mutex, so concurrent access from this
-// goroutine and any Update handler is safe.
+// Each *pi.TurnDoneCache is itself goroutine-safe (sync.Mutex on
+// every method), so concurrent access from this goroutine and any
+// Update handler is safe.
 func (m *Model) pollTurnDonesAsync() tea.Cmd {
 	type paneSnap struct {
 		ticketID     board.TicketID
@@ -3011,6 +3017,10 @@ func (m *Model) pollTurnDonesAsync() tea.Cmd {
 			if cache == nil {
 				continue
 			}
+			// The cache's own sync.Mutex protects concurrent access
+			// between this goroutine and any Update handler. The
+			// sync.Map above protects the (ticketID -> cache) mapping;
+			// the cache itself protects its fields. Two layers.
 
 			stat, err := os.Stat(cache.Path())
 			if err != nil {
@@ -3033,7 +3043,12 @@ func (m *Model) pollTurnDonesAsync() tea.Cmd {
 			}
 		}
 		if len(fires) == 0 {
-			return nil
+			// Return an empty pollTurnDonesMsg (NOT nil) so the
+			// dispatcher's type switch is explicit. Returning nil
+			// would still work — Bubble Tea silently skips nil msgs
+			// — but it's fragile: any future code that does
+			// msg.(*pollTurnDonesMsg) on a nil would panic.
+			return pollTurnDonesMsg{}
 		}
 		// Wrap multiple fires into a single Msg so the dispatch path
 		// stays cheap. Update iterates and calls handlePaneTurnDone

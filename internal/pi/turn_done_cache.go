@@ -28,20 +28,28 @@
 //                                     cache WITHOUT firing (user
 //                                     was already aware of the state)
 //
-// Concurrency: NOT goroutine-safe. All callers serialize through the
-// Bubble Tea Update loop, so we don't need a mutex.
+// Concurrency: GOROUTINE-SAFE. Every public method takes c.mu (or
+// reads path, which is immutable after construction). Added after
+// the 2026-06-30 post-merge audit found a real (untriggered) data
+// race between the poll goroutine (Update/IsStale) and any future
+// caller from the Update goroutine. The mutex is cheap — locked
+// regions are microseconds, called twice per 5-second cycle per
+// pane — and protects against future regressions.
 
 package pi
 
 import (
 	"errors"
 	"os"
+	"sync"
 	"time"
 )
 
 // TurnDoneCache is the per-pane edge detector. See file header for
 // the API contract.
 type TurnDoneCache struct {
+	mu sync.Mutex
+
 	path string
 
 	// lastStopReason is the most recent stopReason observed. Empty
@@ -78,6 +86,8 @@ func NewTurnDoneCache(path string) *TurnDoneCache {
 // Update also stores the offset + mtime so subsequent IsStale
 // queries can compare cheaply.
 func (c *TurnDoneCache) Update(stopReason string, offset int64, mtime time.Time) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	fired := stopReason == "stop" && c.lastStopReason != "stop"
 	c.lastStopReason = stopReason
 	c.lastOffset = offset
@@ -101,6 +111,8 @@ func (c *TurnDoneCache) Update(stopReason string, offset int64, mtime time.Time)
 // could be wrong here, but the cost of being wrong is one extra scan,
 // not a missed notification.
 func (c *TurnDoneCache) IsStale(mtime time.Time, offset int64) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if mtime.After(c.lastMtime) {
 		return true
 	}
@@ -115,11 +127,19 @@ func (c *TurnDoneCache) IsStale(mtime time.Time, offset int64) bool {
 // stopReason field on the last message". Callers that want to render
 // a UI badge can use this directly.
 func (c *TurnDoneCache) LastStopReason() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	return c.lastStopReason
 }
 
-// Path returns the JSONL file the cache is tracking.
+// Path returns the JSONL file the cache is tracking. Path is set
+// once at construction and never modified, so it does not need the
+// lock — but we hold it anyway for consistency with the other
+// getters (the cost is microseconds and it eliminates a category
+// of "did I forget to lock this field?" questions).
 func (c *TurnDoneCache) Path() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	return c.path
 }
 
@@ -146,8 +166,13 @@ func NewTurnDoneCacheFromFile(path string) (*TurnDoneCache, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Initialize cache state under the lock so concurrent readers
+	// (who might already have a pointer to c from the sync.Map) see
+	// a consistent view once this method returns.
+	c.mu.Lock()
 	c.lastStopReason = sr
 	c.lastOffset = stat.Size()
 	c.lastMtime = stat.ModTime()
+	c.mu.Unlock()
 	return c, nil
 }
