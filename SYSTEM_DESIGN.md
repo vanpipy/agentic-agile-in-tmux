@@ -971,6 +971,79 @@ const (
 
 ---
 
+### 7.4 Per-Task Stop Notifications(每任务停止通知)
+
+**需求来源**:`task/awp` ticket。10 个任务 A–J 并行运行时,用户在 B pane 工作,A
+完成时需要 TUI 内部通知,不用主动切回 A 才能看到。
+
+#### 7.4.1 触发事件
+
+| 事件 | 含义 | 来源 | 实现 |
+|------|------|------|------|
+| **进程退出** | pi 子进程死亡(主动退出、崩溃、网络断开) | `terminal.ExitMsg` (已存在) | 现成 |
+| **每轮完成** | assistant 发完最后一 token,`stopReason == "stop"`,等用户下一 prompt | pi session JSONL tail | 待实现 |
+
+#### 7.4.2 通知策略
+
+| 条件 | 行为 |
+|------|------|
+| 退出/完成的 pane 是当前 **focused** | **静默**(用户看得见 pane 状态,不需要 toast) |
+| 退出/完成的 pane 是 **非 focused** | TUI 内部 toast 通知,文案带 ticket 标题 |
+| ExitMsg 带非 nil `err` | 文案含"failed",触发 ✗ 图标(匹配 view.go:471-484 检测规则) |
+| ExitMsg 带 nil `err` | 触发 ✓ 图标 |
+
+#### 7.4.3 文案规范
+
+| 场景 | Toast 字符串 | 图标 |
+|------|--------------|------|
+| focused pane 正常退出 | `Agent exited` | ✓ |
+| focused pane 崩溃退出 | `Agent failed: <err>` | ✗ |
+| 非 focused pane 正常退出 | `<ticket title> exited` | ✓ |
+| 非 focused pane 崩溃退出 | `<ticket title> failed` | ✗ |
+| 非 focused pane 每轮完成 | `<ticket title> finished a turn` | ✓ |
+
+**图标选择约定**:view.go:471-484 通过 toast 字符串前缀 "Failed" / "Error" 或
+子串 "failed" 决定 ✗ 渲染。`notifyExit` helper (model.go) 严格遵循此约定,
+避免需要新增 view 层逻辑。
+
+#### 7.4.4 实现要点
+
+- **退出**走 `model.go` 的 `ExitMsg` handler。**每轮完成**通过 `pollAgentStatusesAsync`
+  扩展,扫 pi session JSONL 找最后一条 assistant `message.stopReason`,边沿检测
+  (`toolUse → stop` 转换时触发一次)。
+- **不持久化**任何新增字段。Toast 是 ephemeral,3 秒后自动消失(`view.go:471`、
+  `model.go:483-486`)。
+- **不修改** `AgentCompleted` AgentStatus 字段,`view.go:400/1777` 的 ✓ 分支仍保持
+  死代码(后续 ticket 单独处理持久化"已完成"状态)。
+- **不引入** `saveTicket` 调用。已有 9 个调用点全跟用户事件绑定,新增不破坏此模式。
+- **JSONL 解析**不能复用 `parseSessionInfo`(`maxScanLines = 200` 限制,真实 session
+  可达 1226 行)。新增 `DetectLastStopReason(path)` 函数,反向扫描最后 4 KB 找到
+  最后一条 assistant 消息。
+
+#### 7.4.5 性能预算
+
+| 指标 | 预算 |
+|------|------|
+| 空闲 pane 轮询成本 | < 2 µs / pane / poll(stat-only skip) |
+| 活跃 pane 轮询成本 | < 2 ms / pane / poll(增量 JSONL 读取) |
+| 10 个 pane 每 5 s 周期 | ~20 ms(0.4% 单核 CPU) |
+| 30 个 pane 每 5 s 周期 | ~60 ms(1.1% 单核 CPU) |
+| 每事件磁盘写入 | **0**(toast 是 ephemeral) |
+
+#### 7.4.6 已知限制(明确不做)
+
+- **多 toast 排队**:`m.notification` 是单字符串,10 个 pane 3 秒内都完成只看到最后
+  一条。v1 接受,后续 ticket 处理。
+- **焦点切换错失通知**:用户先在 A、A 完成(静默)、切到 B,A 的通知永远丢失。符合
+  "focused pane 静默"规则,后续可加 focus-change 时回放。
+- **退出 + 完成双通知**:一窗口内先完成一轮再退出,会发 2 次。不同前缀区分即可。
+
+#### 7.4.7 参考
+
+详细调研:见 `DONE_DETECTION_RESEARCH.md`(本仓库根目录)。
+
+---
+
 ## 8. 关键流程
 
 ### 8.1 启动 ticket + 启动 pi
