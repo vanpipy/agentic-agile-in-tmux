@@ -53,8 +53,6 @@ type TicketStatus string
 const (
 	StatusBacklog    TicketStatus = "backlog"
 	StatusInProgress TicketStatus = "in_progress"
-	StatusDone       TicketStatus = "done"
-	StatusArchived   TicketStatus = "archived"
 )
 
 type AgentStatus string
@@ -128,7 +126,6 @@ type Ticket struct {
 	CreatedAt   time.Time  `json:"created_at"`
 	UpdatedAt   time.Time  `json:"updated_at"`
 	StartedAt   *time.Time `json:"started_at,omitempty"`
-	CompletedAt *time.Time `json:"completed_at,omitempty"`
 
 	Labels   []string          `json:"labels,omitempty"`
 	Priority int               `json:"priority,omitempty"`
@@ -164,15 +161,18 @@ func (t *Ticket) SetStatus(status TicketStatus) error {
 	if err := t.CanTransitionTo(status); err != nil {
 		return err
 	}
+	// Same-status is a strict no-op. Don't move StartedAt — it records
+	// "first time the user started this ticket" and accumulates across
+	// cycles. Don't touch UpdatedAt either; nothing changed.
+	if t.Status == status {
+		return nil
+	}
 	now := time.Now()
 	t.Status = status
 	t.UpdatedAt = now
 
-	switch status {
-	case StatusInProgress:
+	if status == StatusInProgress {
 		t.StartedAt = &now
-	case StatusDone:
-		t.CompletedAt = &now
 	}
 	return nil
 }
@@ -183,30 +183,37 @@ func (t *Ticket) SetStatus(status TicketStatus) error {
 // TicketStatus transitions, not about AgentStatus or any runtime
 // concerns. The board package shouldn't know about agent semantics.
 //
-// Rules:
-//   - archived is terminal: no transition out (except archived → archived no-op)
-//   - All other transitions are allowed (backlog ↔ in_progress ↔ done,
-//     any → archived, done → backlog to reopen)
+// Rules (post-2026-06-28 simplification — see .sages/workspace/draft.md):
+//   - backlog ↔ in_progress are the only two states; transitions are
+//     allowed in both directions
+//   - same-status is a no-op
 //
 // Returns nil for allowed transitions, error otherwise.
 //
 // Caller responsibility: if a transition would orphan a running agent
-// (e.g., in_progress → backlog with AgentStatus == AgentWorking), the
-// caller must check that BEFORE invoking this method. The UI layer's
-// dropTicket / quickMoveTicket handlers do this check.
+// (in_progress → backlog with AgentStatus == AgentWorking), the caller
+// must check that BEFORE invoking this method. The UI layer's
+// dropTicket / quickMoveTicket (now toggleTicketStatus) handlers do
+// this check.
 func (t *Ticket) CanTransitionTo(target TicketStatus) error {
 	// Same-status transition is a no-op; always allowed.
 	if t.Status == target {
 		return nil
 	}
 
-	// Archived is terminal — no transition out (except to itself, handled above).
-	if t.Status == StatusArchived {
-		return fmt.Errorf("cannot transition from %s to %s (archived is terminal)", t.Status, target)
+	// In the 2-state model, the only non-same transitions are
+	// backlog ↔ in_progress, both of which are always allowed.
+	// We use a switch to make the intent explicit and to give a
+	// useful error message for any future out-of-range status.
+	switch t.Status {
+	case StatusBacklog, StatusInProgress:
+		switch target {
+		case StatusBacklog, StatusInProgress:
+			return nil
+		}
 	}
 
-	// All other transitions are allowed.
-	return nil
+	return fmt.Errorf("invalid transition from %s to %s (only backlog ↔ in_progress allowed)", t.Status, target)
 }
 
 type Column struct {
@@ -220,8 +227,7 @@ type Column struct {
 func DefaultColumns() []Column {
 	return []Column{
 		{ID: "backlog", Name: "Backlog", Status: StatusBacklog, Color: "#89b4fa", Limit: 0},
-		{ID: "in-progress", Name: "In Progress", Status: StatusInProgress, Color: "#f9e2af", Limit: 3},
-		{ID: "done", Name: "Done", Status: StatusDone, Color: "#a6e3a1", Limit: 0},
+		{ID: "in-progress", Name: "In Progress", Status: StatusInProgress, Color: "#f9e2af", Limit: 0},
 	}
 }
 
