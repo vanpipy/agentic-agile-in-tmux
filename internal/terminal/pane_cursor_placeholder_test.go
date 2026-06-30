@@ -3,7 +3,6 @@ package terminal
 import (
 	"strings"
 	"testing"
-	"time"
 )
 
 // TestPane_View_CursorOnWideCharPlaceholder_RendersBlock is a
@@ -151,26 +150,24 @@ func TestPane_View_CursorOnPlaceholder_NoNulByteInOutput(t *testing.T) {
 // of '你', so no cursor block was emitted — the user could not see
 // where they were typing.
 //
-// Note: each step sleeps > render throttle (16ms) so the second
-// View() call sees the post-HandleOutput state. Without the sleep,
-// View() returns the throttled cached view from the previous step.
+// Uses RenderNow() to bypass the 16ms View() throttle deterministically
+// (no wall-clock sleep). Without this, a tight HandleOutput + View
+// sequence would race the throttle and observe stale cached output.
 func TestPane_View_CursorFlowWithCJK_RealisticFlow(t *testing.T) {
 	p := wideCharPane(t, 20, 3)
 
 	// Step 1: prompt with initial CJK.
 	p.HandleOutput([]byte("> 你"))
-	time.Sleep(50 * time.Millisecond)
 
-	view1 := p.View()
+	view1 := p.RenderNow()
 	if !strings.Contains(view1, "\x1b[7m") {
 		t.Fatalf("step 1: cursor missing; view=%q", view1)
 	}
 
 	// Step 2: append another CJK.
 	p.HandleOutput([]byte("好"))
-	time.Sleep(50 * time.Millisecond)
 
-	view2 := p.View()
+	view2 := p.RenderNow()
 	if !strings.Contains(view2, "\x1b[7m") {
 		t.Fatalf("step 2: cursor missing after appending CJK; view=%q", view2)
 	}
@@ -182,9 +179,8 @@ func TestPane_View_CursorFlowWithCJK_RealisticFlow(t *testing.T) {
 
 	// Step 3: BS — cursor moves back onto '好's placeholder.
 	p.HandleOutput([]byte("\b"))
-	time.Sleep(50 * time.Millisecond)
 
-	view3 := p.View()
+	view3 := p.RenderNow()
 	// BUG (pre-fix): cursor invisible here because x/vt reports
 	// cursor at col 4 (placeholder of 好 at col 3).
 	if !strings.Contains(view3, "\x1b[7m") {
@@ -193,6 +189,28 @@ func TestPane_View_CursorFlowWithCJK_RealisticFlow(t *testing.T) {
 	// Verify no NUL leaked into the stream.
 	if strings.ContainsRune(view3, 0) {
 		t.Errorf("step 3: NUL byte in rendered output; view=%q", view3)
+	}
+}
+
+// TestPane_RenderNow_BypassesViewThrottle pins the RenderNow
+// contract: RenderNow always produces a fresh view of the current
+// x/vt state, even when View() within the 16ms throttle window
+// would return the cached view.
+func TestPane_RenderNow_BypassesViewThrottle(t *testing.T) {
+	p := wideCharPane(t, 10, 3)
+
+	p.HandleOutput([]byte("abc"))
+	p.RenderNow() // establish a render timestamp (sets p.lastRender = now)
+
+	// Immediately (well within 16ms) change state and call RenderNow.
+	p.HandleOutput([]byte("D"))
+	rendered := p.RenderNow()
+
+	// RenderNow must reflect the post-HandleOutput state, not the
+	// stale cached view from before "D".
+	plain := stripANSI(rendered)
+	if !strings.Contains(plain, "abcD") {
+		t.Errorf("RenderNow did not include post-throttle update; plain=%q", plain)
 	}
 }
 

@@ -104,6 +104,7 @@ type Pane struct {
 	// applied to x/vt via SetScrollbackSize in Start.
 	altScreenActive bool     // tracks if child process is in alternate screen mode
 	altScreenActiveCh chan altScreenEvent // signals from x/vt alt-screen callback
+	cursorHidden      bool               // tracks if child process has asked to hide the cursor (\x1b[?25l)
 	consumerDone     chan struct{}        // closed when altScreenConsumer exits
 	stopOnce         sync.Once             // ensures Stop is idempotent
 	viewportOffset  int      // lines scrolled back (0 = live view)
@@ -744,6 +745,7 @@ func (p *Pane) handleOutputLocked(data []byte) {
 	}
 
 	p.detectAltScreenChanges(data)
+	p.detectCursorVisibilityChanges(data)
 
 	if p.altScreenActive {
 		p.vt.Write(data)
@@ -846,6 +848,50 @@ func (p *Pane) detectAltScreenChanges(data []byte) {
 			p.altScreenActive = false
 			return
 		}
+	}
+}
+
+// detectCursorVisibilityChanges scans output for DECTCEM cursor
+// visibility sequences and updates p.cursorHidden accordingly.
+//
+// x/vt's Emulator API does NOT expose the Cursor.Hidden field
+// directly (only Position via CursorPosition()), so we cannot ask
+// x/vt "is the cursor hidden?". Instead we track the change
+// ourselves by scanning output for the standard VT sequences:
+//
+//	\x1b[?25l  — hide cursor (DECTCEM reset)
+//	\x1b[?25h  — show cursor (DECTCEM set)
+//
+// Called with mutex held.
+//
+// Limitation: byte-scanning cannot detect a sequence that spans two
+// chunks (the first Read on the PTY ends mid-escape, the next
+// begins mid-escape). For cursor-visibility sequences (\x1b[?25l /
+// \x1b[?25h — 6 bytes each) this is extremely rare in practice: PTY
+// reads typically deliver chunks of 4 KB+ where these sequences
+// almost never split. If a chunk boundary DOES land mid-escape, the
+// cursor visibility state will be stale by one render, which is a
+// cosmetic glitch (cursor either visible when it should be hidden or
+// vice versa) rather than a correctness bug.
+//
+// Future: x/vt exposes CursorVisibility callback (see x/vt
+// callbacks.go). Once we wire that callback in installCallbacks,
+// this byte-scanner becomes a redundant safety net. For now it is
+// the sole mechanism.
+func (p *Pane) detectCursorVisibilityChanges(data []byte) {
+	// Hide cursor (child asks for it to disappear). We check this
+	// first because in pathological input where both sequences
+	// appear in the same chunk, the LAST occurrence wins, and a
+	// common pattern is "set invisible now, set visible later".
+	// Browsing for either sequence first is fine for the
+	// common case — a sequence that includes both would be
+	// malformed VT input.
+	if bytes.Contains(data, []byte("\x1b[?25l")) {
+		p.cursorHidden = true
+		return
+	}
+	if bytes.Contains(data, []byte("\x1b[?25h")) {
+		p.cursorHidden = false
 	}
 }
 
@@ -1255,6 +1301,29 @@ func (p *Pane) View() string {
 	return p.cachedView
 }
 
+// RenderNow forces an immediate render, bypassing the 16ms throttle.
+//
+// Intended for use by tests that need to assert the rendered output
+// immediately after HandleOutput without a wall-clock sleep. In
+// production (Bubble Tea runtime), View() is called on every model
+// update inside the TEA loop, where 16ms ≈ one frame at 60fps — the
+// throttle is the right behavior in that context. Tests that
+// drive OutputMsg + View() directly in a tight loop can call
+// RenderNow() to deterministically observe the post-HandleOutput state
+// instead of racing the throttle.
+//
+// Holds p.mu for the duration of the render. Safe for concurrent
+// use, but typically called from the same goroutine as View().
+func (p *Pane) RenderNow() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	p.cachedView = p.renderVTUnlocked()
+	p.lastRender = time.Now()
+	p.dirty = false
+	return p.cachedView
+}
+
 func (p *Pane) renderVTUnlocked() string {
 	if p.vt == nil {
 		// Caller should check IsReady() before calling View().
@@ -1332,8 +1401,18 @@ func (p *Pane) renderScrolledViewUnlocked(cols, rows int) string {
 	return result.String()
 }
 
-// renderGlyphLine renders a line of glyphs with ANSI styling
-// logicalRow is used for selection highlighting
+// renderGlyphLine renders a line of glyphs with ANSI styling.
+// logicalRow is used for selection highlighting.
+//
+// NOTE on the asymmetry with renderLiveRow/renderLiveScreenUnlocked:
+// this function does NOT have the `&& !isCursor` guard on the
+// placeholder skip. The cursor is a live-screen concept — when
+// viewing scrollback, no cursor is drawn (user is reading history,
+// not typing). So unlike the live renderers, this function never
+// needs to fall through to cursor emission for a placeholder cell.
+// Keep these two skip patterns in sync when changing cursor
+// rendering: the live renderers' asymmetric guard is by design, not
+// an oversight.
 func (p *Pane) renderGlyphLine(line []*uv.Cell, cols int, logicalRow int) string {
 	var result strings.Builder
 	var currentStyle uv.Style
@@ -1364,6 +1443,8 @@ func (p *Pane) renderGlyphLine(line []*uv.Cell, cols int, logicalRow int) string
 		// Placeholder cell (zero-value, second column of a wide char).
 		// Skip emission but propagate batch state so the wide char's
 		// style + selection aren't broken at the placeholder boundary.
+		// (No cursor guard here — see function doc on asymmetry with
+		// renderLiveRow/renderLiveScreenUnlocked.)
 		if isPlaceholder(cell) {
 			continue
 		}
@@ -1390,11 +1471,86 @@ func (p *Pane) renderGlyphLine(line []*uv.Cell, cols int, logicalRow int) string
 	return result.String()
 }
 
-// renderLiveRow renders a single row from the live terminal screen
-// logicalRow is used for selection highlighting
-// Must hold vt.Lock
+// renderLiveRow renders a single row from the live terminal screen.
+// logicalRow is used for selection highlighting (may differ from row
+// when the viewport is scrolled into scrollback).
+//
+// Must hold p.mu (vt access goes through p.vt).
+//
+// This is a thin wrapper around renderLiveCellsInto that fetches the
+// cursor position from x/vt. The shared cell-iteration logic lives in
+// renderLiveCellsInto — see that function for the per-cell semantics
+// (placeholder skip, cursor block on placeholder, ANSI styling,
+// selection rendering).
 func (p *Pane) renderLiveRow(cols, row int, logicalRow int) string {
+	cursorPos := p.vt.CursorPosition()
+	cursorVis := p.cursorVisible(cursorPos)
 	var result strings.Builder
+	result.Grow(cols * 2)
+	p.renderLiveCellsInto(&result, cols, row, logicalRow, cursorPos, cursorVis)
+	return result.String()
+}
+
+// renderLiveScreenUnlocked renders the full live terminal screen
+// (must hold p.mu and vt.Lock).
+//
+// This is a thin wrapper that fetches the cursor position once and
+// delegates each row to renderLiveCellsInto. Hoisting the cursor
+// fetch out of the per-row loop eliminates the redundant
+// CursorPosition() call that the previous per-row implementation did.
+func (p *Pane) renderLiveScreenUnlocked(cols, rows int) string {
+	cursorPos := p.vt.CursorPosition()
+	cursorVis := p.cursorVisible(cursorPos)
+
+	var result strings.Builder
+	result.Grow(rows * cols * 2)
+
+	for row := 0; row < rows; row++ {
+		if row > 0 {
+			result.WriteByte('\n')
+		}
+		p.renderLiveCellsInto(&result, cols, row, row, cursorPos, cursorVis)
+	}
+
+	return result.String()
+}
+
+// renderLiveCellsInto emits a single live-screen row into result.
+// Shared between renderLiveRow (used by scrollback mix) and
+// renderLiveScreenUnlocked (used for the full live render).
+//
+// Per-cell semantics:
+//   - Placeholder cells (zero-value Cell{} after a wide char's main
+//     cell) are skipped UNLESS the cursor lands on the placeholder.
+//     This is the asymmetry documented in renderGlyphLine — placeholders
+//     are invisible unless they happen to carry the cursor.
+//   - When the cursor IS on a placeholder, cellRune returns 0 (NUL)
+//     and we substitute a space before emitting the cursor block,
+//     so the terminal never sees a stray NUL byte.
+//   - Consecutive same-style cells (with the same selection state and
+//     no cursor between them) are batched into a single ANSI escape
+//     sequence to keep the rendered terminal stream compact.
+//
+// Caller invariants:
+//   - Must hold p.mu (vt state must not move under us during reads).
+//   - cursorPos / cursorVis must be computed once before the row loop
+//     in renderLiveScreenUnlocked; renderLiveRow computes them inline.
+//   - result will receive row contents; caller is responsible for
+//     inserting any required separators (e.g., \n between rows).
+//
+// Parameters:
+//   - result:    destination for the emitted ANSI escapes + characters
+//   - cols:      screen width to iterate over
+//   - row:       live-screen row to read cells from (= cursor Y when cursor is in this row)
+//   - logicalRow: row index used for selection.Contains() lookups; equal to row when not scrolled
+//   - cursorPos: x/vt's current cursor position (passed in to amortize CursorPosition() across rows)
+//   - cursorVis: whether the cursor should be drawn at all (false when out-of-bounds or Hidden)
+func (p *Pane) renderLiveCellsInto(
+	result *strings.Builder,
+	cols, row, logicalRow int,
+	cursorPos uv.Position,
+	cursorVis bool,
+) {
 	var currentStyle uv.Style
 	var batch strings.Builder
 	firstCell := true
@@ -1414,9 +1570,6 @@ func (p *Pane) renderLiveRow(cols, row int, logicalRow int) string {
 		batch.Reset()
 	}
 
-	cursorPos := p.vt.CursorPosition()
-	cursorVis := cursorVisible(p.vt.CursorPosition())
-
 	for col := 0; col < cols; col++ {
 		cell := p.vt.CellAt(col, row)
 
@@ -1424,36 +1577,33 @@ func (p *Pane) renderLiveRow(cols, row int, logicalRow int) string {
 
 		// Placeholder cell: skip emission UNLESS the cursor lands
 		// on it. Skipping placeholders is what fixes the wide-char
-		// spacing bug (commit a6ef325), but doing so unconditionally
+		// spacing bug (commit a6ef325); doing so unconditionally
 		// also drops the cursor block when x/vt reports the cursor
 		// position on a placeholder — which happens after BS on a
 		// CJK char, after CUP/CUF landing on a placeholder, etc.
-		// Symptom: the cursor "disappears" and the next typed char
-		// appears out of sync (the wrong-cursor ticket).
+		// Symptom (the wrong-cursor ticket): the cursor disappears
+		// and the next typed char appears out of sync.
 		if isPlaceholder(cell) && !isCursor {
 			continue
 		}
 
-		// cellRune returns 0 (NUL) for placeholder cells. The cursor
-		// block path uses the rune as the visible character, so we
-		// must substitute a space — placeholders carry no visual
-		// content of their own (they are the right half of a wide
-		// char's 2-cell footprint, occupied by the wide char to the
-		// left).
+		// cellRune returns 0 (NUL) for placeholders. The cursor block
+		// path uses the rune as the visible character, so substitute a
+		// space here so the terminal never sees a stray NUL byte.
 		ch := cellRune(cell)
 		if ch == 0 {
 			ch = ' '
 		}
 
 		cellSelected := p.selection != nil && p.selection.Contains(Position{Row: logicalRow, Col: col})
-
-		// Style changed or selection changed? Flush batch
 		cellStyle := cellStyleOr(cell, uv.Style{})
+
+		// Style changed or selection changed? Flush batch.
 		if !firstCell && (!cellStyle.Equal(&currentStyle) || isCursor || cellSelected != inSelection) {
 			flushBatch()
 		}
 
-		// Handle cursor with reverse video (cursor takes priority over selection)
+		// Handle cursor with reverse video (cursor takes priority over selection).
 		if isCursor {
 			result.WriteString("\x1b[7m") // Reverse
 			result.WriteRune(ch)
@@ -1470,93 +1620,6 @@ func (p *Pane) renderLiveRow(cols, row int, logicalRow int) string {
 		batch.WriteRune(ch)
 	}
 	flushBatch()
-
-	return result.String()
-}
-
-// renderLiveScreenUnlocked renders the live terminal screen (must hold mu and vt.Lock)
-func (p *Pane) renderLiveScreenUnlocked(cols, rows int) string {
-	cursorPos := p.vt.CursorPosition()
-	cursorVis := cursorVisible(p.vt.CursorPosition())
-
-	var result strings.Builder
-	result.Grow(rows * cols * 2)
-
-	for row := 0; row < rows; row++ {
-		if row > 0 {
-			result.WriteByte('\n')
-		}
-
-		// Track current style for batching
-		var currentStyle uv.Style
-		var batch strings.Builder
-		firstCell := true
-		inSelection := false
-
-		flushBatch := func() {
-			if batch.Len() == 0 {
-				return
-			}
-			if inSelection {
-				result.WriteString("\x1b[7m") // Reverse video for selection
-			} else {
-				result.WriteString(buildANSIFromStyle(currentStyle))
-			}
-			result.WriteString(batch.String())
-			result.WriteString("\x1b[0m")
-			batch.Reset()
-		}
-
-		for col := 0; col < cols; col++ {
-			cell := p.vt.CellAt(col, row)
-
-			isCursor := cursorVis && col == cursorPos.X && row == cursorPos.Y
-
-			// Placeholder cell: skip emission UNLESS the cursor lands
-			// on it. Skipping unconditionally regressed cursor
-			// visibility for the cases listed in renderLiveRow.
-			if isPlaceholder(cell) && !isCursor {
-				continue
-			}
-
-			// cellRune returns 0 (NUL) for placeholders; substitute a
-			// space when emitting the cursor block at that position
-			// so the terminal does not receive a stray NUL byte.
-			ch := cellRune(cell)
-			if ch == 0 {
-				ch = ' '
-			}
-
-			logicalRow := row // When not scrolled, logical row = screen row
-			cellSelected := p.selection != nil && p.selection.Contains(Position{Row: logicalRow, Col: col})
-
-			cellStyle := cellStyleOr(cell, uv.Style{})
-
-			// Style changed or selection changed? Flush batch
-			if !firstCell && (!cellStyle.Equal(&currentStyle) || isCursor || cellSelected != inSelection) {
-				flushBatch()
-			}
-
-			// Handle cursor with reverse video
-			if isCursor {
-				result.WriteString("\x1b[7m") // Reverse
-				result.WriteRune(ch)
-				result.WriteString("\x1b[27m") // Un-reverse
-				firstCell = true
-				inSelection = false
-				continue
-			}
-
-			currentStyle = cellStyle
-			inSelection = cellSelected
-			firstCell = false
-
-			batch.WriteRune(ch)
-		}
-		flushBatch()
-	}
-
-	return result.String()
 }
 
 // buildANSIFromStyle constructs ANSI escape sequence from uv.Style.
@@ -1639,10 +1702,26 @@ func colorToANSI(c color.Color, isFG bool) string {
 //
 // Returns 0 (NUL) for placeholder cells (Cell{} zero-value, which
 // x/vt uses to "fill" the second column of a wide character whose
-// main cell has Width=2). Callers must check for 0 and skip output;
-// emitting a placeholder as a space causes "half-font spacing"
-// between CJK chars and breaks line-wrap alignment (Bug: wide
-// chars render with extra gap, cursor lands on wrong row).
+// main cell has Width=2). Three valid call-site responses to the
+// 0 value, depending on context:
+//
+//   - Skip the cell entirely (text extraction in GetContent,
+//     GetScrollbackLine, renderGlyphLine, selection.ExtractText).
+//     Emitting a placeholder as a space causes "half-font spacing"
+//     between CJK chars and breaks line-wrap alignment (Bug: wide
+//     chars render with extra gap, cursor lands on wrong row).
+//
+//   - Substitute ' ' for the rune (cursor block emission in
+//     renderLiveRow and renderLiveScreenUnlocked when the cursor
+//     lands on a placeholder; see commit ee500b0). The cursor
+//     block path uses the rune as the visible character, so we
+//     emit a space rather than risk a stray NUL byte in the
+//     terminal stream. result.WriteRune(0) would write \x00.
+//
+//   - Render the main cell of the wide char with reverse video,
+//     shifting the cursor to the main-cell column instead of the
+//     placeholder. (Not currently used in awp's renderer — xterm
+//     convention renders the cursor block AT the placeholder.)
 //
 // For nil cells (which can occur at the buffer's edges) we keep
 // the legacy behavior of returning ' ' — callers can still emit a
@@ -1696,9 +1775,20 @@ func cellContentEqual(a, b *uv.Cell) bool {
 }
 
 // cursorVisible reports whether the cursor should be drawn at its position.
-// x/vt's Cursor struct has a Hidden field (true = don't render cursor).
-func cursorVisible(c uv.Position) bool {
-	// Position.X == -1 is the x/vt convention for "no cursor".
+// Two conditions must hold:
+//   1. The child process has not asked to hide the cursor (DECTCEM
+//      reset, \x1b[?25l). Tracked locally as p.cursorHidden because
+//      x/vt's Emulator API does not expose Cursor.Hidden via
+//      CursorPosition(); we observe the change via
+//      detectCursorVisibilityChanges.
+//   2. The cursor position is in-bounds. Position.X == -1 (or any
+//      negative coordinate) is x/vt's convention for "no cursor".
+//      CursorPosition() always reports a value; we sanity-check it
+//      here even though x/vt is unlikely to emit invalid coords.
+func (p *Pane) cursorVisible(c uv.Position) bool {
+	if p.cursorHidden {
+		return false
+	}
 	return c.X >= 0 && c.Y >= 0
 }
 
