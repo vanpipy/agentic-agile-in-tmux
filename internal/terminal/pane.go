@@ -874,25 +874,37 @@ func (p *Pane) detectAltScreenChanges(data []byte) {
 // cosmetic glitch (cursor either visible when it should be hidden or
 // vice versa) rather than a correctness bug.
 //
+// Ordering: when both sequences appear in the same chunk, the LAST
+// occurrence wins (matching VT parser semantics — the most recent
+// DECTCEM sequence determines the current state). Earlier logic used
+// a FIRST-wins pattern that silently dropped later sequences in the
+// same chunk; this was a real bug, now fixed via bytes.LastIndex.
+//
 // Future: x/vt exposes CursorVisibility callback (see x/vt
 // callbacks.go). Once we wire that callback in installCallbacks,
 // this byte-scanner becomes a redundant safety net. For now it is
 // the sole mechanism.
 func (p *Pane) detectCursorVisibilityChanges(data []byte) {
-	// Hide cursor (child asks for it to disappear). We check this
-	// first because in pathological input where both sequences
-	// appear in the same chunk, the LAST occurrence wins, and a
-	// common pattern is "set invisible now, set visible later".
-	// Browsing for either sequence first is fine for the
-	// common case — a sequence that includes both would be
-	// malformed VT input.
-	if bytes.Contains(data, []byte("\x1b[?25l")) {
+	// Use LastIndex (not Contains) so that when both sequences
+	// appear in the same chunk, the LAST one wins — matching VT
+	// terminal semantics where the most recent DECTCEM sequence
+	// determines the current state. A previous version of this
+	// function used Contains with an early `return`, which made
+	// it FIRST-wins — silently dropping later sequences in the
+	// same chunk and contradicting the documented contract.
+	hideSeq := []byte("\x1b[?25l")
+	showSeq := []byte("\x1b[?25h")
+	hideIdx := bytes.LastIndex(data, hideSeq)
+	showIdx := bytes.LastIndex(data, showSeq)
+	switch {
+	case hideIdx >= 0 && (showIdx < 0 || hideIdx > showIdx):
 		p.cursorHidden = true
-		return
-	}
-	if bytes.Contains(data, []byte("\x1b[?25h")) {
+	case showIdx >= 0:
 		p.cursorHidden = false
 	}
+	// else: neither sequence in this chunk → leave p.cursorHidden
+	// unchanged (so a chunk-spanned hide-then-next-chunk-show still
+	// reflects the hide until the show chunk arrives).
 }
 
 // scheduleRenderTick returns a Cmd to trigger render after throttle interval

@@ -93,3 +93,41 @@ func TestPane_View_CursorHidden_ToggleMultipleTimes(t *testing.T) {
 		t.Fatalf("step 3: expected cursor hidden; view=%q", p.RenderNow())
 	}
 }
+
+// TestPane_View_CursorHidden_LastSequenceInChunkWins pins the
+// ordering semantics of detectCursorVisibilityChanges: when BOTH
+// \x1b[?25l and \x1b[?25h appear in the same chunk, the LAST one
+// wins (matching VT parser semantics — the most recent DECTCEM
+// sequence determines the state).
+//
+// The previous implementation used bytes.Contains with an early
+// `return`, which made it FIRST-wins — silently dropping later
+// sequences in the same chunk. This test catches that bug.
+//
+// Pre-fix trace (show-then-hide in same chunk):
+//   Contains(hide) → true → cursorHidden = true → return
+//   Final state: hidden (matches LAST-wins for THIS direction).
+//
+// Pre-fix trace (hide-then-show in same chunk):
+//   Contains(hide) → true → cursorHidden = true → return
+//   Show check never runs.
+//   Final state: hidden (BUG — LAST was show, expected visible).
+func TestPane_View_CursorHidden_LastSequenceInChunkWins(t *testing.T) {
+	// Direction 1: hide then show in one chunk → final = show.
+	p := wideCharPane(t, 10, 3)
+	p.HandleOutput([]byte("hello"))
+	p.HandleOutput([]byte("intro\x1b[?25lmid\x1b[?25houtro"))
+	if !strings.Contains(p.RenderNow(), "\x1b[7m") {
+		t.Errorf("hide-then-show in same chunk: expected cursor visible (last wins); view=%q",
+			p.RenderNow())
+	}
+
+	// Direction 2: show then hide in one chunk → final = hide.
+	p2 := wideCharPane(t, 10, 3)
+	p2.HandleOutput([]byte("hello"))
+	p2.HandleOutput([]byte("\x1b[?25hprefix\x1b[?25lsuffix"))
+	if strings.Contains(p2.RenderNow(), "\x1b[7m") {
+		t.Errorf("show-then-hide in same chunk: expected cursor hidden (last wins); view=%q",
+			p2.RenderNow())
+	}
+}
