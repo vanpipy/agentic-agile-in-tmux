@@ -504,15 +504,16 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.spinner, cmd = m.spinner.Update(msg)
 		return m, cmd
 
+	// notificationMsg fires from tickNotification (every notificationTickInterval).
+	// Self-sustaining: clear the toast if it's been on screen longer than
+	// notificationDuration; always re-arm the tick on return. Conditional
+	// re-arm ("only tick when a toast is visible") would let the tick die
+	// during the first 500ms after Init() if no m.notify() ran, recreating
+	// the "feature does nothing" regression. See NOTIFY_DIAGNOSIS.md §6.
 	case notificationMsg:
 		if m.notification != "" && time.Since(m.notifyTime) > notificationDuration {
 			m.notification = ""
 		}
-		// Always re-arm the tick. If we stopped ticking when the toast
-		// cleared, a later m.notify() call would set a toast with no
-		// tick running to dismiss it — the original bug returns.
-		// The handler is cheap when m.notification == "" (single string
-		// compare + a 500ms timer), so the cost is negligible.
 		return m, tickNotification(notificationTickInterval)
 
 	case updateCheckMsg:
@@ -3131,6 +3132,10 @@ type spawnErrorMsg struct {
 	err      string
 }
 
+// tickAgentStatus emits an agentStatusMsg after the given delay. The
+// case agentStatusMsg handler re-arms unconditionally so the
+// status-poll loop runs forever. Used by Init() and on every
+// agentStatusMsg (model.go:483-488).
 func tickAgentStatus(d time.Duration) tea.Cmd {
 	return tea.Tick(d, func(t time.Time) tea.Msg {
 		return agentStatusMsg(t)
@@ -3140,20 +3145,28 @@ func tickAgentStatus(d time.Duration) tea.Cmd {
 // notificationDuration is how long a toast stays on screen before
 // the periodic tick auto-dismisses it. Encoded as a constant so
 // tests can reason about the threshold without magic numbers.
+// See SYSTEM_DESIGN.md §7.4.4 for the full design rationale.
 const notificationDuration = 3 * time.Second
 
 // notificationTickInterval is how often the notification tick fires
 // while a toast is visible. 500ms is fine for sub-second user
 // perception and keeps CPU usage trivial.
+// See SYSTEM_DESIGN.md §7.4.4 for the full design rationale.
 const notificationTickInterval = 500 * time.Millisecond
 
 // tickNotification emits a notificationMsg after the given delay.
 // The model.Update handler for notificationMsg uses this to
 // auto-dismiss toasts after notificationDuration.
 //
-// The tick is self-sustaining: the handler re-arms it as long as
-// a notification is on screen, and stops ticking once the toast
-// is cleared.
+// The tick is self-sustaining: the handler re-arms it unconditionally
+// on every notificationMsg (matching the tickAgentStatus pattern).
+// The cost is one 500ms timer + a single string compare per tick
+// when no toast is on screen — negligible. Conditional re-arm
+// ("only tick when state is X") breaks Init()-based one-shot ticks:
+// if the state is empty when Init's first tick fires, the tick dies
+// and is never restarted, recreating the original "feature does
+// nothing" bug. See NOTIFY_DIAGNOSIS.md §6 for the regression
+// history.
 func tickNotification(d time.Duration) tea.Cmd {
 	return tea.Tick(d, func(t time.Time) tea.Msg {
 		return notificationMsg(t)

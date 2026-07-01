@@ -3,7 +3,38 @@ package ui
 import (
 	"strings"
 	"testing"
+
+	"github.com/pi/awp/internal/config"
+	"github.com/pi/awp/internal/project"
 )
+
+// newTestModel creates a Model with a fresh in-memory GlobalTicketStore
+// scoped to a temp git repo. Shared across the test files that need a
+// Model without spawning pi agents (notification tests, view tests, etc.).
+//
+// Tests that need to add tickets or panes should call newTestModel and
+// then mutate the returned Model directly — this helper only sets up
+// the minimum state NewModel requires (registry + store + updateChecker).
+//
+// See exit_notification_test.go and notify_auto_dismiss_test.go for
+// usage examples.
+func newTestModel(t *testing.T) *Model {
+	t.Helper()
+	tmpDir := t.TempDir()
+	if err := initGitRepoForTest(t, tmpDir); err != nil {
+		t.Fatalf("init git repo: %v", err)
+	}
+	registry := &project.ProjectRegistry{
+		Projects: map[string]*project.Project{},
+	}
+	p := project.NewProject("test-proj", tmpDir)
+	registry.Projects[p.ID] = p
+	gts, err := project.LoadGlobalTicketStore(registry)
+	if err != nil {
+		t.Fatalf("LoadGlobalTicketStore: %v", err)
+	}
+	return NewModel(config.DefaultConfig(), gts, registry, "", nil)
+}
 
 // TestTruncate covers the three branches of truncate:
 //   1. String fits in max → returned unchanged

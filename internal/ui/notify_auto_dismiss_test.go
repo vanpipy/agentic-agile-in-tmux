@@ -39,31 +39,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pi/awp/internal/config"
-	"github.com/pi/awp/internal/project"
+	tea "github.com/charmbracelet/bubbletea"
 )
-
-// newTestModel creates a Model with a fresh in-memory GlobalTicketStore
-// scoped to a temp git repo. Mirrors the setup in exit_notification_test.go
-// but without adding tickets (we're testing the notification machinery,
-// not ticket behavior).
-func newTestModel(t *testing.T) *Model {
-	t.Helper()
-	tmpDir := t.TempDir()
-	if err := initGitRepoForTest(t, tmpDir); err != nil {
-		t.Fatalf("init git repo: %v", err)
-	}
-	registry := &project.ProjectRegistry{
-		Projects: map[string]*project.Project{},
-	}
-	p := project.NewProject("test-proj", tmpDir)
-	registry.Projects[p.ID] = p
-	gts, err := project.LoadGlobalTicketStore(registry)
-	if err != nil {
-		t.Fatalf("LoadGlobalTicketStore: %v", err)
-	}
-	return NewModel(config.DefaultConfig(), gts, registry, "", nil)
-}
 
 // TestNotify_AutoDismissesAfterTimeout pins contract #1: after the toast
 // has been on screen for > notificationDuration, the handler clears
@@ -77,18 +54,21 @@ func TestNotify_AutoDismissesAfterTimeout(t *testing.T) {
 	}
 
 	// Backdate notifyTime so the handler sees "toast has been on
-	// screen for 10 seconds" — well past notificationDuration.
-	m.notifyTime = time.Now().Add(-10 * time.Second)
+	// screen past notificationDuration". Use a generous margin
+	// (3x the threshold) to avoid timing flakes on slow CI.
+	const elapsed = 3 * notificationDuration
+	m.notifyTime = time.Now().Add(-elapsed)
 
 	_, _ = m.Update(notificationMsg(time.Now()))
 
 	if m.notification != "" {
-		t.Errorf("toast did not auto-dismiss after 10s on screen.\n"+
+		t.Errorf("toast did not auto-dismiss after %v on screen.\n"+
 			"Pre-fix root cause: nothing ever schedules notificationMsg at\n"+
 			"runtime, so this Update call is the first time the handler\n"+
 			"has ever run in production. The clear branch should still\n"+
 			"fire when the time window has elapsed.\n"+
-			"Got m.notification = %q, want \"\"", m.notification)
+			"Got m.notification = %q, want \"\"",
+			elapsed, m.notification)
 	}
 }
 
@@ -162,15 +142,22 @@ func TestInit_SchedulesNotificationTick(t *testing.T) {
 }
 
 // TestInit_BatchIncludesNotificationTick is the higher-level wiring
-// check: Init()'s returned tea.Cmd must include a notification tick.
-// This test guards against a future regression where someone removes
-// tickNotification from Init()'s tea.Batch.
+// check: Init()'s returned tea.Cmd must include a notification tick
+// that actually fires a notificationMsg at runtime. This guards against
+// a future regression where someone removes tickNotification from
+// Init()'s tea.Batch (the bug c24e035 was meant to fix).
 //
-// We can't synchronously wait for a real tick in a unit test without
-// timing flakiness, so we rely on the structural test above
-// (TestInit_SchedulesNotificationTick) for the wiring contract. This
-// test verifies Init() returns a non-nil cmd without hanging the
-// test suite.
+// Strategy: run Init()'s returned cmd in a goroutine, capture the
+// tea.Msg it produces. If Init() schedules a tickNotification, the
+// returned BatchMsg unwraps to a tea.Tick that fires notificationMsg
+// after notificationTickInterval. The test waits up to 2x the tick
+// interval for the notificationMsg to arrive.
+//
+// tea.Batch's invocation returns BatchMsg synchronously (the batch
+// itself doesn't block); the runtime then dispatches each child cmd
+// in its own goroutine. We capture whatever the first child cmd
+// returns — if Init() doesn't include tickNotification, no
+// notificationMsg will be observed within the timeout.
 func TestInit_BatchIncludesNotificationTick(t *testing.T) {
 	m := newTestModel(t)
 
@@ -179,11 +166,49 @@ func TestInit_BatchIncludesNotificationTick(t *testing.T) {
 		t.Fatal("Init() returned nil; expected non-nil tea.Cmd")
 	}
 
-	// tea.Batch returns BatchMsg synchronously (it's a slice of
-	// cmds, dispatched by the runtime). The notification tick is
-	// fired async via tea.Tick. We don't drain the tick here —
-	// structural coverage is in TestInit_SchedulesNotificationTick.
-	_ = cmd
+	// tea.Batch returns BatchMsg synchronously (the batch doesn't
+	// block); the runtime then dispatches each child cmd in its own
+	// goroutine. Capture whatever any child cmd returns.
+	// If Init() includes tickNotification, we'll see notificationMsg
+	// within ~notificationTickInterval + slack.
+	type result struct {
+		msg tea.Msg
+	}
+	results := make(chan result, 16)
+
+	// tea.Batch returns a Cmd that, when invoked, produces a BatchMsg.
+	// The runtime then iterates BatchMsg and invokes each child cmd.
+	// Our test harness mimics the runtime by running the batch
+	// cmd and dispatching each child.
+	msg := cmd()
+	batch, ok := msg.(tea.BatchMsg)
+	if !ok {
+		t.Fatalf("Init() cmd did not produce BatchMsg; got %T", msg)
+	}
+	for _, child := range batch {
+		go func(c tea.Cmd) {
+			results <- result{c()}
+		}(child)
+	}
+
+	deadline := time.After(2 * notificationTickInterval)
+	for {
+		select {
+		case r := <-results:
+			if _, ok := r.msg.(notificationMsg); ok {
+				return // success: notification tick is wired into Init()
+			}
+			// Ignore other msg types (spinner.Tick, agentStatusMsg, etc.)
+		case <-deadline:
+			t.Errorf("Init()'s tea.Batch did not produce any notificationMsg within %v.\n"+
+				"This means tickNotification is missing from Init()'s batch —\n"+
+				"the original 'notify did not work' regression returns.\n"+
+				"Verified contract: Init() must include tickNotification alongside\n"+
+				"tickAgentStatus, spinner.Tick, and checkForUpdates.",
+				2*notificationTickInterval)
+			return
+		}
+	}
 }
 
 // TestView_ShowsNotification pins the end-to-end contract: when
