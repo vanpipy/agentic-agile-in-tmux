@@ -299,6 +299,7 @@ func NewModel(cfg *config.Config, globalStore *project.GlobalTicketStore, projec
 func (m *Model) Init() tea.Cmd {
 	return tea.Batch(
 		tickAgentStatus(5 * time.Second),
+		tickNotification(notificationTickInterval),
 		m.spinner.Tick,
 		m.checkForUpdates(),
 	)
@@ -504,8 +505,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 
 	case notificationMsg:
-		if time.Since(m.notifyTime) > 3*time.Second {
+		if m.notification != "" && time.Since(m.notifyTime) > notificationDuration {
 			m.notification = ""
+		}
+		// Re-arm the tick while a notification is still on screen.
+		// When the toast is gone, stop ticking until the next m.notify().
+		if m.notification != "" {
+			return m, tickNotification(notificationTickInterval)
 		}
 		return m, nil
 
@@ -3128,6 +3134,29 @@ type spawnErrorMsg struct {
 func tickAgentStatus(d time.Duration) tea.Cmd {
 	return tea.Tick(d, func(t time.Time) tea.Msg {
 		return agentStatusMsg(t)
+	})
+}
+
+// notificationDuration is how long a toast stays on screen before
+// the periodic tick auto-dismisses it. Encoded as a constant so
+// tests can reason about the threshold without magic numbers.
+const notificationDuration = 3 * time.Second
+
+// notificationTickInterval is how often the notification tick fires
+// while a toast is visible. 500ms is fine for sub-second user
+// perception and keeps CPU usage trivial.
+const notificationTickInterval = 500 * time.Millisecond
+
+// tickNotification emits a notificationMsg after the given delay.
+// The model.Update handler for notificationMsg uses this to
+// auto-dismiss toasts after notificationDuration.
+//
+// The tick is self-sustaining: the handler re-arms it as long as
+// a notification is on screen, and stops ticking once the toast
+// is cleared.
+func tickNotification(d time.Duration) tea.Cmd {
+	return tea.Tick(d, func(t time.Time) tea.Msg {
+		return notificationMsg(t)
 	})
 }
 
