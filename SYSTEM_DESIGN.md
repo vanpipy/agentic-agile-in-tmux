@@ -1014,7 +1014,15 @@ const (
   扩展,扫 pi session JSONL 找最后一条 assistant `message.stopReason`,边沿检测
   (`toolUse → stop` 转换时触发一次)。
 - **不持久化**任何新增字段。Toast 是 ephemeral,3 秒后自动消失(`view.go:471`、
-  `model.go:483-486`)。
+  `model.go:506-516` 的 `case notificationMsg`)。**实现**: `Init()` 调度
+  `tickNotification(notificationTickInterval)`,handler 在每条 `notificationMsg`
+  上检查 `time.Since(m.notifyTime) > notificationDuration` 并清空 toast;tick
+  自维持 (handler 无条件 re-arm,与 `tickAgentStatus` 模式一致)。
+  - 常量: `notificationDuration = 3s`, `notificationTickInterval = 500ms`
+    (`internal/ui/model.go`)。见 commits `c24e035` + `b2398ac`。
+  - 验收: `internal/ui/notify_auto_dismiss_test.go` + `notify_after_init_dies_test.go`。
+  - 病史: c24e035 引入的 handler 在空状态返回 nil 导致 tick 提前死亡,b2398ac
+    改为无条件 re-arm 才彻底修好。详见 `NOTIFY_DIAGNOSIS.md §6`。
 - **不修改** `AgentCompleted` AgentStatus 字段,`view.go:400/1777` 的 ✓ 分支仍保持
   死代码(后续 ticket 单独处理持久化"已完成"状态)。
 - **不引入** `saveTicket` 调用。已有 9 个调用点全跟用户事件绑定,新增不破坏此模式。
