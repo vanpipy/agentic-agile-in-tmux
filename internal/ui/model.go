@@ -508,12 +508,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.notification != "" && time.Since(m.notifyTime) > notificationDuration {
 			m.notification = ""
 		}
-		// Re-arm the tick while a notification is still on screen.
-		// When the toast is gone, stop ticking until the next m.notify().
-		if m.notification != "" {
-			return m, tickNotification(notificationTickInterval)
-		}
-		return m, nil
+		// Always re-arm the tick. If we stopped ticking when the toast
+		// cleared, a later m.notify() call would set a toast with no
+		// tick running to dismiss it — the original bug returns.
+		// The handler is cheap when m.notification == "" (single string
+		// compare + a 500ms timer), so the cost is negligible.
+		return m, tickNotification(notificationTickInterval)
 
 	case updateCheckMsg:
 		if msg.UpdateAvailable {

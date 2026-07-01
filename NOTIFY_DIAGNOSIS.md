@@ -233,3 +233,79 @@ internal/ui/model.go                     | +28 -1
 internal/ui/notify_auto_dismiss_test.go  | +213 (new)
 NOTIFY_DIAGNOSIS.md                      | +153 (new, this file)
 ```
+
+---
+
+## 6. Audit Follow-up (c24e035 → audit-fix)
+
+After the c24e035 commit landed, an audit pass (`gaoyao` skill) found a
+**critical defect** the original commit missed:
+
+### 6.1 Defect
+
+The handler re-armed the tick **only when a toast was on screen**:
+
+```go
+// c24e035 — BUGGY
+case notificationMsg:
+    if m.notification != "" && time.Since(m.notifyTime) > notificationDuration {
+        m.notification = ""
+    }
+    if m.notification != "" {
+        return m, tickNotification(notificationTickInterval)
+    }
+    return m, nil  // <-- tick dies here when no toast
+```
+
+Init() schedules a one-shot `tickNotification(500ms)`. If no `m.notify()` runs
+within the first 500 ms, the tick fires, sees `m.notification == ""`, returns
+nil, **and the tick is dead forever**. Subsequent `m.notify()` calls set the
+toast but cannot restart the tick — the toast stays on screen indefinitely.
+This is exactly the original bug, just delayed.
+
+In practice, the first toast usually comes from a pane-exit notification,
+which takes longer than 500 ms to occur (worktree setup, spawn, etc.). So the
+regression manifests whenever awp is left idle for >500 ms before its first
+toast.
+
+### 6.2 Fix
+
+Always re-arm the tick, matching the `tickAgentStatus` pattern at
+`model.go:483-488`:
+
+```go
+case notificationMsg:
+    if m.notification != "" && time.Since(m.notifyTime) > notificationDuration {
+        m.notification = ""
+    }
+    return m, tickNotification(notificationTickInterval)
+```
+
+Cost: a 500 ms timer running forever. Negligible — single string compare +
+channel send per tick.
+
+### 6.3 Regression test
+
+`internal/ui/notify_after_init_dies_test.go::TestNotify_AfterFirstTickDies_NoReArmWithoutNotification`:
+
+```go
+_, cmd := m.Update(notificationMsg(time.Now()))
+if cmd == nil {
+    t.Errorf("first empty-state notification tick died (cmd == nil). ...")
+}
+```
+
+Pin: after `Init()`'s first tick fires with no toast, the handler must
+return a non-nil cmd (re-arm).
+
+### 6.4 Lesson
+
+When auditing Bubble Tea wiring, **trace the runtime lifecycle** of any
+`tea.Tick`-based cmd. A tick that dies on an "empty" state can only be
+revived by a producer that knows when to re-arm. The original fix relied on
+the tick "being alive" by the time the first toast appeared — an assumption
+that fails at program start.
+
+**Pattern for future self-sustaining ticks**: mirror `tickAgentStatus` —
+the handler always returns the next tick regardless of state. CPU cost is
+negligible for periodic UI ticks (100ms-1s).
