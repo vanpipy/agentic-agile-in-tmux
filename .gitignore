@@ -11,6 +11,10 @@
 # Output
 *.out
 
+# Mutation testing reports (raw JSON, regenerated each run)
+mutation-*.json
+.gremlins-*.json
+
 # Go workspace file
 go.work
 

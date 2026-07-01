@@ -1,0 +1,80 @@
+# Gremlins configuration for awp — mutation testing driver.
+#
+# Pinned tool: go-gremlins/gremlins v0.6.0
+#   install: curl -sLO https://github.com/go-gremlins/gremlins/releases/download/v0.6.0/gremlins_0.6.0_linux_amd64.tar.gz
+#            tar -xzf gremlins_0.6.0_linux_amd64.tar.gz -C $(go env GOPATH)/bin gremlins
+#
+# Docs: https://gremlins.dev/usage/configuration/
+
+# General output. Set to true once you trust the run; default prints a human
+# summary on stderr which is what we want while iterating.
+silent: false
+
+unleash:
+  # No build tags by default. Awp's unit tests don't need any.
+  tags: ""
+
+  # Don't run the full integration suite for each mutant — only the unit
+  # tests for the mutated package, plus the packages it transitively
+  # depends on for behaviour verification. Awp's `test/pi` requires a real
+  # pi binary and is gated by `//go:build integration`; we keep it out
+  # of mutation runs because most mutations don't touch integration-test
+  # code paths.
+  integration: false
+
+  # Don't auto-fail the run; we want a JSON report instead. Threshold
+  # gates are configured for CI when we add them later.
+  threshold:
+    efficacy: 0
+    mutant-coverage: 0
+
+  # Adaptive timeout: PTY-driven tests use `time.Sleep` waits. Without
+  # this coefficient, a mutation that deletes a sleep produces a
+  # TIMED OUT (different signal than LIVED), which is misleading.
+  # Coefficient 5 multiplies the per-test timeout by 5x for safety.
+  timeout-coefficient: 5
+
+  # Single-CPU test runs are deterministic and faster.
+  test-cpu: 1
+
+  # No need for parallel mutation testing — awp's test suite is fast
+  # enough; 788 mutants × ~0.5s/test ≈ 7 min sequential, vs ~3 min
+  # parallel with race-detector artefacts. Sequential is more debuggable.
+  workers: 1
+
+  # Defensive: gremlins already skips test files. Made explicit so a
+  # future reader doesn't wonder whether this is set somewhere.
+  exclude-files:
+    - '.*_test\.go$'
+
+# Mutator selection. Defaults reflect the trade-offs documented in
+# MUTATION_TESTING.md. Off-by-default mutators are deliberately left
+# off until we have a baseline; enabling more later expands the
+# surface but multiplies runtime.
+mutants:
+  arithmetic-base:
+    enabled: true       # default
+  conditionals-boundary:
+    enabled: true       # default — catches off-by-one
+  conditionals-negation:
+    enabled: true       # default — flips == to != etc.
+  increment-decrement:
+    enabled: true       # default — i++ → i-- etc.
+  invert-negatives:
+    enabled: true       # default — -n → n
+
+  # Off by default. Each adds a category without changing the default
+  # signal; we enable these after we have a stable baseline so the
+  # signal improves incrementally rather than flooding the report.
+  invert-assignments:
+    enabled: false      # a += b → a -= b
+  invert-bitwise:
+    enabled: false      # & ↔ | etc. (rarely meaningful in app code)
+  invert-bwassign:
+    enabled: false      # bitwise assignment variants
+  invert-logical:
+    enabled: false      # && ↔ ||
+  invert-loopctrl:
+    enabled: false      # continue ↔ break
+  remove-self-assignments:
+    enabled: false      # a += b → a = b (rare in app code)
