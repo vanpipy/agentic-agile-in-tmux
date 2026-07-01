@@ -1539,6 +1539,12 @@ func (p *Pane) renderLiveScreenUnlocked(cols, rows int) string {
 //   - When the cursor IS on a placeholder, cellRune returns 0 (NUL)
 //     and we substitute a space before emitting the cursor block,
 //     so the terminal never sees a stray NUL byte.
+//   - Cursor block applies the cell's style + reverse video (see
+//     the inline comment on the cursor path). On a styled cell, the
+//     cell's fg/bg/bold/etc. are emitted in the cursor block's SGR
+//     prefix; on an unstyled cell (empty / placeholder), the cursor
+//     block is just `\x1b[7m{CHAR}\x1b[27m` to keep the rendered
+//     stream compact.
 //   - Consecutive same-style cells (with the same selection state and
 //     no cursor between them) are batched into a single ANSI escape
 //     sequence to keep the rendered terminal stream compact.
@@ -1616,10 +1622,38 @@ func (p *Pane) renderLiveCellsInto(
 		}
 
 		// Handle cursor with reverse video (cursor takes priority over selection).
+		//
+		// The cursor block applies the cell's style + reverse video so
+		// the cursor visually integrates with the cell it's on. Pre-fix
+		// the cursor block was just `\x1b[7m{CHAR}\x1b[27m` — the
+		// cell's fg/bg/bold/etc. were lost because the previous batch
+		// was flushed with `\x1b[0m` (full SGR reset). On a styled
+		// cell this made the cursor "stand out" from the cell (default
+		// colors) instead of appearing AT the cell — the
+		// "cursor position is still not right" symptom.
+		//
+		// Post-fix: the cursor block's SGR prefix carries the cell's
+		// full style (fg, bg, bold, italic, underline, etc.) followed
+		// by `\x1b[7m` for reverse video. Reverse video swaps fg/bg,
+		// so the cell's fg becomes the cursor block's bg and vice
+		// versa — matching what xterm and other real terminals do.
+		//
+		// For cells with no style (empty cells, placeholders), the
+		// cursor block is unchanged from before: `\x1b[7m{CHAR}\x1b[27m`.
+		// We special-case the no-style path to keep the rendered stream
+		// compact for the common case (cursor on an empty cell).
 		if isCursor {
-			result.WriteString("\x1b[7m") // Reverse
+			styleStr := buildANSIFromStyle(cellStyle)
+			if styleStr != "" {
+				// Apply cell's style, then add reverse video on top.
+				result.WriteString(styleStr)
+				result.WriteString("\x1b[7m")
+			} else {
+				// No cell style — just reverse video (legacy behavior).
+				result.WriteString("\x1b[7m")
+			}
 			result.WriteRune(ch)
-			result.WriteString("\x1b[27m") // Un-reverse
+			result.WriteString("\x1b[27m") // cancel reverse video, keep other attrs
 			firstCell = true
 			inSelection = false
 			continue
