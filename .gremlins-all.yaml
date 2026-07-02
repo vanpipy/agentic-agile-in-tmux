@@ -1,0 +1,35 @@
+silent: false
+unleash:
+  tags: ""
+  integration: false
+  threshold:
+    efficacy: 0
+    mutant-coverage: 0
+  timeout-coefficient: 5
+  test-cpu: 1
+  workers: 1
+  exclude-files:
+    - '.*_test\.go$'
+mutants:
+  arithmetic-base:
+    enabled: true
+  conditionals-boundary:
+    enabled: true
+  conditionals-negation:
+    enabled: true
+  increment-decrement:
+    enabled: true
+  invert-negatives:
+    enabled: true
+  invert-assignments:
+    enabled: true
+  invert-bitwise:
+    enabled: true
+  invert-bwassign:
+    enabled: true
+  invert-logical:
+    enabled: true
+  invert-loopctrl:
+    enabled: true
+  remove-self-assignments:
+    enabled: true
