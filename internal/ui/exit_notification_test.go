@@ -21,8 +21,6 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/pi/awp/internal/board"
-	"github.com/pi/awp/internal/config"
-	"github.com/pi/awp/internal/project"
 	"github.com/pi/awp/internal/terminal"
 )
 
@@ -34,33 +32,22 @@ import (
 // non-focused pane's exit was silent. This test fails pre-fix
 // (notification empty) and passes post-fix (notification contains A's title).
 func TestExitMsg_NotifiesNonFocusedPane(t *testing.T) {
-	tmpDir := t.TempDir()
-	if err := initGitRepoForTest(t, tmpDir); err != nil {
-		t.Fatalf("init git repo: %v", err)
-	}
+	m := newTestModel(t)
 
-	registry := &project.ProjectRegistry{
-		Projects: map[string]*project.Project{},
+	// Add two tickets so we can have one focused and one not.
+	projectID := ""
+	for _, p := range m.globalStore.Projects() {
+		projectID = p.ID
+		break
 	}
-	p := project.NewProject("test-proj", tmpDir)
-	registry.Projects[p.ID] = p
-
-	gts, err := project.LoadGlobalTicketStore(registry)
-	if err != nil {
-		t.Fatalf("LoadGlobalTicketStore: %v", err)
-	}
-
-	ticketA := board.NewTicket("Render JSON diff", p.ID)
-	ticketB := board.NewTicket("Update README", p.ID)
-	if err := gts.Add(ticketA); err != nil {
+	ticketA := board.NewTicket("Render JSON diff", projectID)
+	ticketB := board.NewTicket("Update README", projectID)
+	if err := m.globalStore.Add(ticketA); err != nil {
 		t.Fatalf("gts.Add A: %v", err)
 	}
-	if err := gts.Add(ticketB); err != nil {
+	if err := m.globalStore.Add(ticketB); err != nil {
 		t.Fatalf("gts.Add B: %v", err)
 	}
-
-	cfg := config.DefaultConfig()
-	m := NewModel(cfg, gts, registry, "", nil)
 
 	// Inject a running pane for ticket A (mimicking pi having spawned).
 	paneA := terminal.New(string(ticketA.ID), 80, 24, 0)
@@ -102,29 +89,17 @@ func TestExitMsg_NotifiesNonFocusedPane(t *testing.T) {
 // post-fix we keep that wording for the focused case (the user knows
 // which one because they were just looking at it).
 func TestExitMsg_FocusedPaneNotifiesGeneric(t *testing.T) {
-	tmpDir := t.TempDir()
-	if err := initGitRepoForTest(t, tmpDir); err != nil {
-		t.Fatalf("init git repo: %v", err)
-	}
+	m := newTestModel(t)
 
-	registry := &project.ProjectRegistry{
-		Projects: map[string]*project.Project{},
+	projectID := ""
+	for _, p := range m.globalStore.Projects() {
+		projectID = p.ID
+		break
 	}
-	p := project.NewProject("test-proj", tmpDir)
-	registry.Projects[p.ID] = p
-
-	gts, err := project.LoadGlobalTicketStore(registry)
-	if err != nil {
-		t.Fatalf("LoadGlobalTicketStore: %v", err)
-	}
-
-	ticketA := board.NewTicket("Focused task", p.ID)
-	if err := gts.Add(ticketA); err != nil {
+	ticketA := board.NewTicket("Focused task", projectID)
+	if err := m.globalStore.Add(ticketA); err != nil {
 		t.Fatalf("gts.Add: %v", err)
 	}
-
-	cfg := config.DefaultConfig()
-	m := NewModel(cfg, gts, registry, "", nil)
 
 	paneA := terminal.New(string(ticketA.ID), 80, 24, 0)
 	if cmd := paneA.StartCmd("", nil...); cmd != nil {
@@ -157,29 +132,17 @@ func TestExitMsg_FocusedPaneNotifiesGeneric(t *testing.T) {
 // based on "Failed" prefix or "failed" substring (view.go:471-484), so
 // our message uses that exact convention to trigger error styling.
 func TestExitMsg_CrashUsesFailedWording(t *testing.T) {
-	tmpDir := t.TempDir()
-	if err := initGitRepoForTest(t, tmpDir); err != nil {
-		t.Fatalf("init git repo: %v", err)
-	}
+	m := newTestModel(t)
 
-	registry := &project.ProjectRegistry{
-		Projects: map[string]*project.Project{},
+	projectID := ""
+	for _, p := range m.globalStore.Projects() {
+		projectID = p.ID
+		break
 	}
-	p := project.NewProject("test-proj", tmpDir)
-	registry.Projects[p.ID] = p
-
-	gts, err := project.LoadGlobalTicketStore(registry)
-	if err != nil {
-		t.Fatalf("LoadGlobalTicketStore: %v", err)
-	}
-
-	ticketA := board.NewTicket("Crashy task", p.ID)
-	if err := gts.Add(ticketA); err != nil {
+	ticketA := board.NewTicket("Crashy task", projectID)
+	if err := m.globalStore.Add(ticketA); err != nil {
 		t.Fatalf("gts.Add: %v", err)
 	}
-
-	cfg := config.DefaultConfig()
-	m := NewModel(cfg, gts, registry, "", nil)
 
 	paneA := terminal.New(string(ticketA.ID), 80, 24, 0)
 	if cmd := paneA.StartCmd("", nil...); cmd != nil {
