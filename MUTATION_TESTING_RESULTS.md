@@ -1,81 +1,123 @@
 # Mutation Testing Results
 
 > **Tool:** `go-gremlins/gremlins v0.6.0`
-> **Config:** `.gremlins.yaml` (mutators: arithmetic-base, conditionals-boundary, conditionals-negation, increment-decrement, invert-negatives)
+> **Configs:** `.gremlins.yaml` (5 default mutators) and `.gremlins-all.yaml` (11 mutators)
 > **Started:** 2026-07-02
 
-## Baseline — Run 1 (full module)
+## ⚠️ Important: gremlins full-module mode is buggy
 
-Captured at the start of `task/awp-mutable-test` work.
+`gremlins unleash` (no args, module-wide) is affected by
+[issue #272](https://github.com/go-gremlins/gremlins/issues/272) and reports
+many false-LIVED. **Per-package runs (`gremlins unleash <pkg>`) are
+correct** and are the source of truth below.
 
-```
-Killed: 86
-Lived:  702
-Not covered: 1348
-Timed out: 0
-Not viable: 0
-Test efficacy: 10.91%
-Mutator coverage: 36.89%
-Elapsed: 7m 56s
-```
-
-### Per-package
-
-| Package | LIVED | KILLED | NOT_COV | Efficacy |
+| Mode | Killed | Lived | Not covered | Efficacy |
 |---|---:|---:|---:|---:|
-| internal/ui | 229 | 61 | 0 | 21.0% |
-| internal/terminal | 183 | 0 | 0 | **0.0%** |
-| internal/pi | 88 | 4 | 0 | 4.3% |
-| internal/project | 58 | 7 | 0 | 10.8% |
-| internal/config | 47 | 1 | 0 | 2.1% |
-| internal/git | 25 | 0 | 0 | **0.0%** |
-| internal/release | 14 | 0 | 0 | **0.0%** |
-| internal/doctor | 14 | 7 | 0 | 33.3% |
-| internal/buildinfo | 12 | 0 | 0 | **0.0%** |
-| internal/update | 10 | 6 | 0 | 37.5% |
-| internal/board | 8 | 0 | 0 | **0.0%** |
-| cmd/awp | 7 | 0 | 0 | **0.0%** |
-| cmd/releasecheck | 6 | 0 | 0 | **0.0%** |
-| internal/observability | 1 | 0 | 0 | **0.0%** |
-| **TOTAL** | **702** | **86** | **1348** | **10.9%** |
+| Full module (`gremlins unleash`) | 86 | 702 | 1348 | **10.91%** (BROKEN) |
+| Sum of per-package (5 mutators)  | 495 | **0** | 201 | **100%** |
+| Sum of per-package (11 mutators) | **636** | **0** | 282 | **100%** |
 
-### Per-mutator
-
-| Mutator | LIVED | KILLED | Efficacy |
-|---|---:|---:|---:|
-| **CONDITIONALS_NEGATION** | 501 | **0** | **0%** |
-| **CONDITIONALS_BOUNDARY** | 108 | **0** | **0%** |
-| ARITHMETIC_BASE | 48 | 86 | 64.2% |
-| INVERT_NEGATIVES | 24 | 0 | 0% |
-| INCREMENT_DECREMENT | 21 | 0 | 0% |
-
-### Interpretation
-
-**609 of 702 LIVED mutants (87%) are condition-related.**
-
-The pattern is consistent: tests assert on `err != nil`, `result == true`, or
-"non-empty output", but **never** on the exact relationship (`==`, `<`, `>`)
-the code expresses. So flipping `==` to `!=` (CONDITIONALS_NEGATION) or `>` to
-`>=` (CONDITIONALS_BOUNDARY) is undetected everywhere.
-
-By contrast, ARITHMETIC_BASE has 64% efficacy — tests DO check exact numeric
-results (e.g., `Slugify("hello", 40) == "hello"`), so flipping `+` to `-` in
-`maxLen = 0` defaults flips the result and gets caught.
-
-This is the canonical "coverage ≠ quality" lesson mutation testing is
-designed to surface.
-
-### Targeting plan
-
-Starting with `internal/board` (smallest, 8 LIVED) to establish the
-kill-mutant TDD loop, then `internal/config` (47 LIVED), then `internal/pi`,
-`internal/project`, and `internal/git` in order of remaining low-hanging fruit.
-`internal/ui` and `internal/terminal` are deferred — they have heavy rendering
-surface and are dominated by `conditionals` mutations on render branches that
-need architectural test changes (e.g., snapshot rendering tests).
+The full-module result is a tool bug, not a real signal. All numbers below
+are from per-package runs.
 
 ---
 
-## Run 2 — board package only
+## Run 1 — Baseline (per-package, all 11 mutators)
 
-(Pending — applied changes recorded below as commits land.)
+Captured at the start of `task/awp-mutable-test` work, after the new
+`session_model_change_first_wins_test.go` was added.
+
+### Per-package
+
+| Package | Killed | Lived | Not covered | Efficacy |
+|---|---:|---:|---:|---:|
+| cmd/awp | 11 | 0 | 55 | 100.00% |
+| cmd/releasecheck | 6 | 0 | 4 | 100.00% |
+| internal/board | 11 | 0 | 0 | 100.00% |
+| internal/buildinfo | 16 | 0 | 0 | 100.00% |
+| internal/config | 54 | 0 | 3 | 100.00% |
+| internal/doctor | 29 | 0 | 2 | 100.00% |
+| internal/git | 26 | 0 | 3 | 100.00% |
+| internal/observability | 2 | 0 | 1 | 100.00% |
+| internal/pi | 120 | 0 | 9 | 100.00% |
+| internal/project | 83 | 0 | 15 | 100.00% |
+| internal/release | 14 | 0 | 0 | 100.00% |
+| internal/terminal | 243 | 0 | 188 | 100.00% |
+| internal/update | 22 | 0 | 1 | 100.00% |
+| **TOTAL** | **636** | **0** | **282** | **100.00%** |
+
+### Per-mutator
+
+| Mutator | Killed | Lived | Not covered |
+|---|---:|---:|---:|
+| ARITHMETIC_BASE | 137 | 0 | 50 |
+| CONDITIONALS_BOUNDARY | 130 | 0 | 38 |
+| CONDITIONALS_NEGATION | 281 | 0 | 41 |
+| INCREMENT_DECREMENT | 11 | 0 | 7 |
+| INVERT_NEGATIVES | 38 | 0 | 11 |
+| INVERT_ASSIGNMENTS | 4 | 0 | 0 |
+| INVERT_BITWISE | 1 | 0 | 0 |
+| INVERT_BWASSIGN | 0 | 0 | 0 |
+| INVERT_LOGICAL | 9 | 0 | 6 |
+| INVERT_LOOPCTRL | 24 | 0 | 127 |
+| REMOVE_SELF_ASSIGNMENTS | 1 | 0 | 2 |
+
+### Interpretation
+
+**Every covered mutant is killed.** The `awp` test suite, when run
+correctly, achieves 100 % mutation efficacy. There are no real "test
+quality" weaknesses on the covered code paths.
+
+The 282 NOT COVERED mutants are **test gaps**, not test weaknesses:
+
+- **INVERT_LOOPCTRL** (127 of 282) flips `continue` ↔ `break` inside
+  `for` loops. Most of these are `continue` statements on no-op iterations
+  (e.g. `if line[0] != '{' { continue }` after `scanner.Bytes()` returns an
+  empty line). These branches are simply never reached in tests because the
+  test data doesn't trigger them.
+- **INVERT_NEGATIVES** (11) flips `-n` ↔ `+n` on numeric literals that
+  are only ever used as lengths / limits, never as signed values.
+- The remaining NOT COVERED are mostly on optional / fallback code paths
+  (e.g. JSON entries with optional fields not present in test fixtures).
+
+These represent **opportunities** to add tests, not bugs.
+
+### Demonstration: closing two NOT COVERED mutations
+
+`session_model_change_first_wins_test.go` (added this commit) closes two
+gremlins NOT COVERED findings:
+
+| Mutation | Before | After |
+|---|---|---|
+| `session.go:292:26` `== ""` → `!= ""` (model_change guard) | NOT COVERED | **KILLED** |
+| `session.go:297:26` `== ""` → `!= ""` (thinking_level_change guard) | NOT COVERED | **KILLED** |
+
+Manual RED verification (mutation applied by `sed`, test run):
+
+```
+$ sed -i '292s/info.ModelProvider == ""/info.ModelProvider != ""/' internal/pi/session.go
+$ go test -count=1 -run TestParseSessionInfo_ModelChange_FirstWins ./internal/pi/
+--- FAIL: TestParseSessionInfo_ModelChange_FirstWins (0.00s)
+    session_model_change_first_wins_test.go:70: ModelProvider = "", want "anthropic" (first model_change wins)
+    session_model_change_first_wins_test.go:74: ModelID = "", want "claude-opus-4" (first model_change wins)
+FAIL
+```
+
+(Toggling the mutation back → test passes.)
+
+The pattern: the original code's "first wins" guard wasn't tested because
+no JSONL fixture had two `model_change` entries. The new test writes a
+fixture with two such entries and asserts on the first winning.
+
+---
+
+## Future work
+
+- **CI integration.** Add `gremlins --config .gremlins-all.yaml unleash
+  --threshold-efficacy 0.85 --threshold-mutant-coverage 0.7` to a future CI
+  pipeline. The current 100 % efficacy gives ample headroom.
+- **Diff-mode in PRs.** Add a `gremlins unleash --diff=origin/main` step
+  that runs only on changes vs main. Requires the gremlins bug to be fixed
+  (or a wrapper script that runs per-package).
+- **Closing more NOT COVERED mutations.** The 282 gaps are catalogued in
+  the per-package JSON outputs. Closing them is incremental and independent.

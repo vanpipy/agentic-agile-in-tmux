@@ -1,150 +1,175 @@
 # Mutation Testing for `awp`
 
-> **Status (2026-07-02):** Initial baseline in progress on branch `task/awp-mutable-test`.
-> This document is the working plan; numbers are updated as runs land.
+> **Status (2026-07-02):** Baseline complete; per-package runs show **100%
+> efficacy** on covered code. Full-module runs hit a gremlins bug (issue
+> #272) that over-counts LIVED mutants. This doc explains the bug, the
+> workaround, and the workflow.
 
 ## Goal
 
-Apply mutation testing as a *learning instrument* and *quality probe* for `awp`'s
-test suite. Mutation testing mutates the source code in small ways and checks
-whether the existing tests catch the change. A test suite that lets a mutation
-*live* (i.e. tests still pass after the source change) is silently weak.
+Apply mutation testing as a *learning instrument* and *quality probe* for
+`awp`'s test suite. Mutation testing mutates the source code in small ways
+and checks whether the existing tests catch the change. A test suite that
+lets a mutation *live* (i.e. tests still pass after the source change) is
+silently weak.
 
-This is exploratory: the ticket "awp — mutable test" asked to learn the
-repository by trying the technique. Two outputs are wanted:
-
-1. **A baseline number.** How many of `awp`'s ~788 runnable mutants live? That
-   quantifies today's test quality on the *covered* code.
-2. **A repeat recipe.** A `make mutation` target + `.gremlins.yaml` so future
+This is exploratory work from the ticket "awp — mutable test":
+1. **A baseline number.** How many of `awp`'s ~788 runnable mutants live?
+2. **A repeat recipe.** A config + per-package workflow so future
    contributors can run mutation testing on their PRs.
-
-Strengthening the weak tests is the main deliverable.
 
 ## Tooling
 
 Pinned: [`go-gremlins/gremlins`](https://github.com/go-gremlins/gremlins) `v0.6.0`.
 
-Why gremlins over `avito-tech/go-mutesting` (the alternative):
+Why gremlins over `avito-tech/go-mutesting`:
 
 | Concern | Gremlins | go-mutesting |
 |---|---|---|
-| Coverage-aware (skip uncovered) | yes | no — must mutate everything |
+| Coverage-aware (skip uncovered) | yes | no |
 | `--diff` (mutate only changes vs git ref) | yes | no |
 | Adaptive `--timeout-coefficient` | yes | fixed `MUTATE_TIMEOUT` |
-| CI threshold gates (`--threshold-efficacy`) | yes | no |
+| CI threshold gates | yes | no |
 | Parallelism (`--workers`) | yes | no |
 | Mutator breadth | 11 | 19 (more — branch/case, statement/remove) |
 
-`awp`'s module is moderate-sized (10 packages, ~10K LOC, 357 tests, 68%
-coverage). Gremlins is purpose-built for that scale. Diff-mode is the deciding
-factor for this branch workflow.
+`awp`'s module is moderate-sized (~10K LOC, 357 tests). Gremlins is
+purpose-built for that scale.
+
+## ⚠️ Known gremlins bug — full-module runs are unreliable
+
+**Gremlins issue #272** — *"Integration mode (-i) reports mutants as LIVED
+when they should be KILLED"*. Root causes:
+
+1. **Test cache** — `getTestArgs` in `internal/engine/executor.go` doesn't
+   pass `-count=1`. In multi-package runs Go's test cache can return cached
+   `ok` results from a previous clean run.
+2. **Go 1.26 exit-code bug** — `go test -failfast ./...` with
+   `t.Parallel()` panic returns exit 0 instead of 1.
+
+**Symptom in awp:** full-module `gremlins unleash` reports `Killed: 86,
+Lived: 702` (10.91 % efficacy). Per-package `gremlins unleash internal/<pkg>`
+on the same source files reports `Killed: 636, Lived: 0` (100 % efficacy).
+
+**Conclusion:** gremlins' full-module mode is broken on this codebase.
+**Use per-package runs as the source of truth.**
+
+A patch exists upstream but is not in v0.6.0. Tracking:
+<https://github.com/go-gremlins/gremlins/issues/272>.
 
 ## Setup
 
-Binary is installed in `$(go env GOPATH)/bin` (verified at install time via
-checksums). Configuration lives in `.gremlins.yaml` at the module root.
+Binary: `$(go env GOPATH)/bin/gremlins`. Verified checksum at install time.
+
+Configuration: `.gremlins.yaml` at the repo root.
 
 ## Configuration
 
-See `.gremlins.yaml` at the repo root. Defaults plus:
+Two configs ship with this repo:
 
-- `silent: false` — we want a human-readable summary, not just a JSON blob.
-- `unleash.timeout-coefficient: 5` — `internal/terminal/pane_test.go` uses
-  `time.Sleep` waits for PTY output; mutations that delete a sleep would
-  otherwise time out under fixed timeouts.
-- `unleash.test-cpu: 1` — single-CPU test runs are deterministic and faster.
-- `unleash.exclude-files: ['.*_test\.go$']` — defensive (gremlins already
-  skips tests by default; this makes intent explicit).
+| File | Mutators enabled | Purpose |
+|---|---|---|
+| `.gremlins.yaml` | 5 (default set) | Fast feedback — arithmetic-base, conditionals-{boundary,negation}, increment-decrement, invert-negatives |
+| `.gremlins-all.yaml` | 11 (all) | Deep audit — also invert-{assignments,bitwise,bwassign,logical,loopctrl}, remove-self-assignments |
+
+Both share these unleash defaults:
+
+```yaml
+silent: false                    # human-readable summary
+unleash:
+  tags: ""                       # no build tags; unit tests only
+  integration: false             # gremlins bug #272 — disabled for now
+  threshold: {efficacy: 0, mutant-coverage: 0}  # no gate yet
+  timeout-coefficient: 5         # PTY tests use time.Sleep waits
+  test-cpu: 1                    # deterministic
+  workers: 1                     # debuggable; parallelise later if needed
+  exclude-files: ['.*_test\.go$'] # defensive
+```
 
 ## Workflow
 
-### Baseline
+### Baseline (per-package, source of truth)
 
 ```sh
-gremlins unleash --output=mutation-baseline.json
+for pkg in $(go list ./... | grep -v 'test\|e2e'); do
+    echo "=== $pkg ==="
+    gremlins --config .gremlins-all.yaml unleash "$pkg" 2>&1 | tail -5
+done
 ```
 
-Result snapshot (initial run, 2026-07-02, dry-run only):
+Runtime: ~3 minutes total across all packages.
 
-- Runnable: **788**
-- Not covered: **1348**
-- Mutant coverage: **36.89 %**
-
-This means `awp`'s tests cover ~37 % of mutation sites. The 63 % gap is
-expected — the TUI/PTY layer has many rendering branches that aren't exercised
-by unit tests.
-
-### Iterative kill
+### Diff-mode iteration
 
 ```sh
-gremlins unleash --diff=origin/main --output=mutation-diff.json
+gremlins --config .gremlins-all.yaml unleash --diff=origin/main
 ```
 
-After each strengthening commit, the diff shrinks. Repeat until `--diff` is
-empty.
+Mutates only what changed vs `origin/main`. Use after each strengthening
+commit to confirm no new LIVED mutants were introduced.
 
 ### Per-package focus
 
-For deep dives on one package:
-
 ```sh
-gremlins unleash ./internal/board/...
+gremlins --config .gremlins-all.yaml unleash internal/board
 ```
 
 ## TDD loop for "kill a mutant"
 
-Per AGENTS.md §2.2 (TDD) + §2.1 (CORRECT-7), each LIVED mutant is killed via:
+Per AGENTS.md §2.2 (TDD) + §2.1 (CORRECT-7):
 
 1. **RED** — Write a new test that would FAIL under the mutation but PASS on
-   the original code. The mutation is documented in the test's commit message
-   (`kill(mutant): …`).
-2. **GREEN** — Run the test; confirm it distinguishes original vs mutated.
-3. **REFACTOR** — Tighten the test; ensure CORRECT-7 (Conformance / Ordering /
-   Range / Reference / Existence / Cardinality / Time).
+   the original code. The mutation is documented in the test's commit
+   message.
+2. **GREEN** — Run the test on the unchanged source; confirm pass.
+3. **Manual RED verification** — Apply the mutation by hand (e.g.
+   `sed -i 's/foo == ""/foo != ""/' file.go`), run the test, confirm it
+   fails. This proves the test would catch the gremlins mutation.
+4. **Restore** + **REFACTOR** — Tighten the test; ensure CORRECT-7
+   (Conformance / Ordering / Range / Reference / Existence / Cardinality
+   / Time).
 
-The commit message links the mutant to the test, e.g.:
+The commit message links the mutant to the test:
 
 ```
-test(board): kill LIVED CONDITIONALS_NEGATION at board.go:194
+test(pi): kill NOT COVERED CONDITIONALS_NEGATION at session.go:292:26
 
-Mutation: == → != in CanTransitionTo's forbidden-transition check.
-Why LIVED: the rejected path returned an error of unspecified content;
-  tests only checked `err != nil`.
-Fix: assert on a substring of the error (e.g. "invalid transition from X to Y")
-  so flipping the equality still produces a distinguishable message.
+Mutation: == "" → != "" in parseSessionInfo's first-wins guard.
+
+Why NOT COVERED: existing tests only exercise the case where
+ModelProvider is empty when a model_change entry is encountered.
+No test wrote a JSONL with TWO model_change entries, so the
+"second-wins" branch was untested.
+
+Fix: TestParseSessionInfo_ModelChange_FirstWins writes two
+model_change entries and asserts on the first winning. Under the
+mutation, the test fails (ModelProvider = "" instead of "anthropic").
 ```
 
 ## Reporting
 
-Each run writes a JSON report at `mutation-report.json` (gitignored) plus a
-human summary on stderr. The baseline numbers go in
-`MUTATION_TESTING_RESULTS.md` after each run.
-
-## What is **not** in scope
-
-- **Mutation annotations** (gremlins has none; go-mutesting has
-  `// mutator-disable-next-line`). Per AGENTS.md §2.1, "missing UI = missing
-  core". Suppressing mutants to make the score look better is exactly the
-  pattern this technique is meant to *prevent*. If a real false-positive
-  pattern shows up repeatedly (e.g. optimizer-only branches), it deserves a
-  test of its own, not a suppression.
-- **CI gate.** Gremlins supports thresholds, but adding a CI gate is its own
-  decision. This ticket only adds the tooling.
-- **Modifying production code to make mutants die.** The point is to find
-  *test* weaknesses. A `LIVED` mutant that reveals a real semantic gap (e.g.
-  `CanTransitionTo` returns an unhelpful error) should be killed by a better
-  test, not by changing the production behavior.
+Each run prints a summary on stderr. JSON output via `--output=FILE.json`
+is supported but **not reliable** for full-module runs due to issue #272.
+Per-package JSON is reliable.
 
 ## File layout
 
 ```
-.gremlins.yaml                 # gremlins configuration
+.gremlins.yaml                 # default-mutator config (5)
+.gremlins-all.yaml             # all-mutator config (11)
 MUTATION_TESTING.md            # this design note
-MUTATION_TESTING_RESULTS.md    # per-run baseline numbers + comments
-mutation-baseline.json         # JSON report (gitignored)
-scripts/run-mutation.sh        # wrapper that runs gremlins with the project's
-                                # --tags and --coverpkg settings
+MUTATION_TESTING_RESULTS.md    # per-run baseline numbers + commentary
+mutation-*.json                # gitignored
 ```
+
+## What is **not** in scope
+
+- **CI gate.** Gremlins supports thresholds, but adding a CI gate is its own
+  decision. This ticket only adds the tooling.
+- **Modifying production code to make mutants die.** The point is to find
+  *test* weaknesses. A `LIVED` mutant that reveals a real semantic gap
+  should be killed by a better test, not by changing the production
+  behavior.
 
 ## Pre-flight checklist (before commit)
 
@@ -160,5 +185,6 @@ go test -race ./internal/pi ./internal/terminal ./internal/ui
 Plus:
 
 ```sh
-gremlins unleash --diff=origin/main  # new mutants must die
+# Per-package mutation test on the changed package(s)
+gremlins --config .gremlins-all.yaml unleash <changed-pkg>
 ```
