@@ -66,6 +66,8 @@ import (
 	"github.com/creack/pty"
 
 	uv "github.com/charmbracelet/ultraviolet"
+
+	"github.com/pi/awp/internal/observability"
 	"github.com/charmbracelet/x/vt"
 
 )
@@ -587,10 +589,10 @@ func (p *Pane) StopGraceful(timeout time.Duration) error {
 	}
 
 	done := make(chan error, 1)
-	go func() {
+	observability.SafeGo("pane-wait", func() {
 		_, err := proc.Wait()
 		done <- err
-	}()
+	})
 
 	select {
 	case <-done:

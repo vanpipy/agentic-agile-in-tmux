@@ -18,6 +18,7 @@ import (
 	"github.com/pi/awp/internal/board"
 	"github.com/pi/awp/internal/config"
 	"github.com/pi/awp/internal/git"
+	"github.com/pi/awp/internal/observability"
 	"github.com/pi/awp/internal/pi"
 	"github.com/pi/awp/internal/project"
 	"github.com/pi/awp/internal/terminal"
@@ -310,6 +311,7 @@ func (m *Model) checkForUpdates() tea.Cmd {
 		return nil
 	}
 	return func() tea.Msg {
+		defer observability.RecoverPanic("checkForUpdates")
 		return updateCheckMsg(m.updateChecker.Check())
 	}
 }
@@ -1033,6 +1035,7 @@ func (m *Model) handleQuit() (tea.Model, tea.Cmd) {
 
 func (m *Model) cleanupAsync() tea.Cmd {
 	return func() tea.Msg {
+		defer observability.RecoverPanic("cleanupAsync")
 		m.Cleanup()
 		return shutdownCompleteMsg{}
 	}
@@ -2540,6 +2543,7 @@ func (m *Model) prepareSpawn(ticket *board.Ticket, proj *project.Project) tea.Cm
 	cfg := m.config
 
 	return func() tea.Msg {
+		defer observability.RecoverPanic("prepareSpawn")
 		if mgr == nil {
 			return spawnErrorMsg{ticketID: ticketID, err: git.ErrWorktreeManagerNotFound.Error()}
 		}
@@ -2925,6 +2929,7 @@ func (m *Model) pollAgentStatusesAsync() tea.Cmd {
 	}
 
 	return func() tea.Msg {
+		defer observability.RecoverPanic("collectAgentStatus")
 		results := make(agentStatusResultMsg)
 		for _, p := range panes {
 			if !p.running {
@@ -2987,6 +2992,7 @@ func (m *Model) pollTurnDonesAsync() tea.Cmd {
 	}
 
 	return func() tea.Msg {
+		defer observability.RecoverPanic("collectTurnDone")
 		var fires []paneTurnDoneMsg
 		for _, s := range snaps {
 			jsonlPath, err := pi.LatestSessionJSONL(s.worktreePath)

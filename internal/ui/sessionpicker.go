@@ -53,10 +53,12 @@ func (m *Model) scanSessionsCmd() tea.Cmd {
 	if err != nil {
 		// Home detection failed: surface as a load error in the picker.
 		return func() tea.Msg {
+			defer observability.RecoverPanic("scanSessionsCmd-error")
 			return sessionsLoadedMsg{err: err}
 		}
 	}
 	return func() tea.Msg {
+		defer observability.RecoverPanic("scanSessionsCmd")
 		sessions, lerr := store.List(home)
 		return sessionsLoadedMsg{sessions: sessions, err: lerr}
 	}
@@ -206,6 +208,7 @@ func (m *Model) resumeSessionCmd(info pi.SessionInfo) tea.Cmd {
 // m.selectedTicket() returns the right ticket.
 func (m *Model) spawnAgentCmd(ticketID board.TicketID) tea.Cmd {
 	return func() tea.Msg {
+		defer observability.RecoverPanic("spawnAgentCmd")
 		// Find ticket in column cache and select it
 		for colIdx, tickets := range m.columnTickets {
 			for rowIdx, t := range tickets {
