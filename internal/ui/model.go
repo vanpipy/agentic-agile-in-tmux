@@ -3000,29 +3000,31 @@ func (m *Model) pollTurnDonesAsync() tea.Cmd {
 				continue // pi hasn't created the session yet — skip
 			}
 
-			// Get-or-init the per-pane cache. Two-phase pattern using
-			// sync.Map:
-			//   1. LoadOrStore(_, nil) — fast "is there a cache?" probe
-			//      that inserts a sentinel placeholder if not.
-			//   2. If miss: build a fresh cache from disk and try
-			//      LoadOrStore again. If THIS loses to another poll,
-			//      discard the freshly-built one and use the winner.
-			// The cache itself has its own mutex so concurrent field
-			// access is safe regardless of which cache object "wins".
-			cacheI, _ := m.turnDoneCaches.LoadOrStore(s.ticketID, nil)
+			// Get-or-init the per-pane cache. Corrected 2026-07-07
+			// after a sync.Map race panicked awp (see
+			// turn_done_cache_race_test.go for the repro). The old
+			// two-phase pattern stored a nil placeholder, which a
+			// concurrent goroutine's LoadOrStore would see and return
+			// (nil, true) without overwriting — causing
+			// `actual.(*pi.TurnDoneCache)` to panic on nil.
+			//
+			// New pattern: Load first (no write), then LoadOrStore
+			// with the freshly-built value. No nil placeholder.
 			var cache *pi.TurnDoneCache
-			if cacheI == nil {
+			if existing, ok := m.turnDoneCaches.Load(s.ticketID); ok && existing != nil {
+				cache = existing.(*pi.TurnDoneCache)
+			} else {
 				fresh, ferr := pi.NewTurnDoneCacheFromFile(jsonlPath)
 				if ferr != nil || fresh == nil {
 					continue
 				}
 				actual, loaded := m.turnDoneCaches.LoadOrStore(s.ticketID, fresh)
-				cache = actual.(*pi.TurnDoneCache)
-				if loaded {
+				if loaded && actual != nil {
+					cache = actual.(*pi.TurnDoneCache)
 					_ = fresh // another poll beat us; discard our copy
+				} else {
+					cache = fresh
 				}
-			} else {
-				cache = cacheI.(*pi.TurnDoneCache)
 			}
 			if cache == nil {
 				continue
