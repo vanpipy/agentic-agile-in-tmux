@@ -159,6 +159,7 @@ awp **复用以下模块**(从早期 fork 起步):
 | `internal/git/worktree.go`(249 行) | 整体 | 不改 |
 | `internal/config/{theme,validate}.go` | 整体 | theme 不动;validate 简化(去掉 agent 字段校验) |
 | `internal/testutil/`(143 行) | 整体 | 不改 |
+| `internal/observability/` | 改 | 见 §3.4 — 扩展为 multi-handler(stderr + 文件)+ 加 crash 落盘 |
 | `internal/update/` | 整体 | 不改 |
 | `internal/app/`(`app.go` 159 行) | 整体 | 不改(启动 Bubble Tea program + 信号处理) |
 | `cmd/{root,config,version}.go` | 整体 | 删多 agent 命令;加 `ticket` / `session` 子命令 |
@@ -174,6 +175,53 @@ awp **复用以下模块**(从早期 fork 起步):
 - `internal/agent/`(PiPane = client + 事件订阅 + 状态机) — 原模板无此抽象
 - `internal/ui/eventpane/`(结构化事件流,sub-Model) — 原模板无
 - `internal/ui/terminalpane/`(PTY 嵌入 sub-Model) — 原模板在主 Model 直接持 `panes map`
+
+### 3.4 Observability — 文件日志与 crash 捕获(2026-07-07)
+
+**动机**:2026-07-07 用户运行时遇到 panic,awp 输出 `program was killed: program experienced a panic` 但 panic 值和 stack trace 跟着 Bubble Tea v1.3.10 的 `recoverFromPanic` 走 `fmt.Printf` 到 **stdout**,在 alt-screen 恢复时被滚动条冲掉。`ulimit -c = 0`,没有 core dump。事后无任何 artifact 可查。
+
+**目标**:让下一次 panic 留有可分析的本地档案;不打扰正常使用。
+
+**设计**:
+
+| 项 | 值 | 理由 |
+|---|---|---|
+| 触发 | **始终开启**(stderr + 文件) | 静默失败正是要修的痛点;不能再依赖用户记得加 `--debug` |
+| 默认 level | `Warn` | 正常使用时每天 <10KB,无干扰;一旦出错必落盘 |
+| `--debug` 行为 | 提升到 `Debug` | 保持现有语义;**只是现在 Debug 也写文件** |
+| Log 目录 | `~/.awp/logs/` | 见 §5.4 config example `log.dir`(design 早已预留) |
+| 覆盖 | 环境变量 `AWP_LOG_DIR`(测试) | 单元测试不污染 home |
+| 文件命名 | `awp-YYYY-MM-DD.log` | 一天一文件,按日期轮转 |
+| 格式 | stderr = text(含 source);file = JSON | 终端易读;文件可 `jq` 解析 |
+| Retention | 7 天,启动时清理 | 一次性的 `os.ReadDir` + 按 mtime 删旧 |
+| Multi-handler | 自实现(`slog.Handler` 链) | 不用第三方依赖,见 `internal/observability/logger.go` `multiHandler` |
+| Fallback | 目录创建失败 → 只 stderr + 启动时打印一条 warning | 不让 observability 阻断 awp 启动 |
+| Crash 捕获 | `runTUI()` 加 `defer recover()` 包装 `prog.Run()` | 比升级 bubbletea v2 改动小 100x |
+| Crash 文件 | `awp-crash-YYYY-MM-DD-HHMMSS-<pid>.log` | 与日 log 分离;含 panic 值 + `runtime.Stack(all=true)` + 日 log 最后 100 行 |
+
+**关键决策**:
+1. **不升级 bubbletea v2**。v2 的 panic 落盘是“官方”解,但 API 是 breaking,涉及 model / view / 全部 key handler。AGENTS.md §2.1 抗捷径原则。
+2. **不添加 `--log-file` flag**。和动机矛盾 — 下一个 crash 时用户不会再记得加 flag。
+3. **crash 时 re-panic**。我们的 `defer recover()` 先写文件,然后 `panic(r)` 重新抛给 Bubble Tea 的外层 recover,它仍能恢复 alt-screen。文件不依赖终端状态。
+
+**API 变更**:
+```go
+// Before:
+observability.Init(debug bool)
+// After:
+observability.Init(debug bool, logDir string) error
+
+// New:
+observability.WriteCrashFile(logDir string, r any, stack []byte) (string, error)
+```
+
+**测试要求**(TDD §2.2, §4.2):
+- 默认 level 为 `Warn`(Debug/Info 在 default 下不出文件)
+- `--debug` 提升到 `Debug`
+- `Debug/Info/Warn/Error` 全部落文件
+- `logDir` 不可写时回退到 stderr 且不 panic
+- 启动时清理 7 天前文件
+- `WriteCrashFile` 包含 panic 值和 stack,文件名前缀 `awp-crash-`
 
 ---
 
@@ -234,9 +282,10 @@ awp/
 │   │   ├── config.go                    # JSON config
 │   │   ├── theme.go                     # 8 套主题
 │   │   └── validate.go
-│   ├── observability/                   # ★ 可选:JSON 日志(模板无,awp 可加)
-│   │   ├── logger.go                    #   ~150 行(从 v1 保留适配)
-│   │   └── metrics.go                   #   ~140 行
+│   ├── observability/                   # ★ 多 handler 日志(stderr + 文件)+ crash 捕获
+│   │   ├── logger.go                    #   Init(debug, logDir) + multi-handler + 7 天 retention
+│   │   ├── crash.go                     #   WriteCrashFile — panic 值 + runtime.Stack 落盘
+│   │   └── *_test.go
 │   ├── testutil/                        # TestEnv
 │   └── update/                          # GitHub release 检查
 ├── docs/

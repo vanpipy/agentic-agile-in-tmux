@@ -86,6 +86,23 @@ func runTUI() error {
 		registerSIGUSR1StackDumper()
 	}
 
+	// Crash capture (SYSTEM_DESIGN.md §3.4): wrap prog.Run() so any
+	// panic that escapes Bubble Tea's outer recover is dumped to
+	// a timestamped file under the log dir, then re-panicked so
+	// Bubble Tea still restores the terminal.
+	defer func() {
+		r := recover()
+		if r == nil {
+			return
+		}
+		if path, err := observability.WriteCrashFile(observability.LogDir(), r, nil); err == nil {
+			fmt.Fprintf(os.Stderr, "awp: panic recovered; crash log written to %s\n", path)
+		} else {
+			fmt.Fprintf(os.Stderr, "awp: panic recovered but crash log write failed: %v\n", err)
+		}
+		panic(r) // re-panic so Bubble Tea's outer recover runs
+	}()
+
 	_, err = prog.Run()
 	return err
 }
@@ -364,10 +381,36 @@ var versionCmd = &cobra.Command{
 }
 
 
+// logDirOverride allows tests / power users to redirect log output
+// without setting the AWP_LOG_DIR env var. Zero value means "use env
+// or default (~/.awp/logs/)".
+var logDirOverride string
+
+// defaultLogDir returns the log directory to use, applying
+// AWP_LOG_DIR and logDirOverride in that order.
+func defaultLogDir() string {
+	if logDirOverride != "" {
+		return logDirOverride
+	}
+	if v := os.Getenv("AWP_LOG_DIR"); v != "" {
+		return v
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".awp", "logs")
+}
+
 func init() {
 	rootCmd.PersistentFlags().BoolVar(&debug, "debug", false, "Enable debug logging to stderr")
 	rootCmd.PersistentPreRun = func(cmd *cobra.Command, args []string) {
-		observability.Init(debug)
+		dir := defaultLogDir()
+		if err := observability.Init(debug, dir); err != nil {
+			// Init already printed a warning; the rest of awp
+			// continues with stderr-only logging.
+			_ = err
+		}
 		observability.Debug("awp starting", "version", buildinfo.Version(), "args", os.Args[1:])
 	}
 	projectCmd.AddCommand(projectNewCmd, projectListCmd, projectDeleteCmd)
