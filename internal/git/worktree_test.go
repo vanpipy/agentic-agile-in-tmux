@@ -162,6 +162,142 @@ func TestGetDefaultBranch(t *testing.T) {
 	}
 }
 
+// TestListLocalBranches verifies that ListLocalBranches returns
+// every local branch in the repo, sorted. This is the data source
+// for the ticket form's "Base Branch" picker (FEAT: pick original
+// branch when creating a task).
+//
+// CONFORMANCE: exact slice of branch names.
+// ORDERING: sorted ascending (so the UI shows deterministic order).
+// CARDINALITY: 1 branch in a fresh repo (main or master); N after
+//   we create extras via CreateBranch.
+func TestListLocalBranches(t *testing.T) {
+	dir := newTestGitRepo(t)
+	base := t.TempDir()
+	m := NewWorktreeManagerFromPaths(dir, base)
+
+	// Fresh repo: at least 1 branch.
+	branches, err := m.ListLocalBranches()
+	if err != nil {
+		t.Fatalf("ListLocalBranches: %v", err)
+	}
+	if len(branches) < 1 {
+		t.Fatalf("ListLocalBranches returned %d branches, want >= 1", len(branches))
+	}
+	if !contains(branches, m.GetDefaultBranchNoErr(t)) {
+		t.Errorf("ListLocalBranches missing default branch %q: got %v",
+			m.GetDefaultBranchNoErr(t), branches)
+	}
+
+	// Add two more branches and re-list.
+	if err := m.CreateBranch("feature-x", m.GetDefaultBranchNoErr(t)); err != nil {
+		t.Fatalf("CreateBranch feature-x: %v", err)
+	}
+	if err := m.CreateBranch("feature-y", m.GetDefaultBranchNoErr(t)); err != nil {
+		t.Fatalf("CreateBranch feature-y: %v", err)
+	}
+
+	branches, err = m.ListLocalBranches()
+	if err != nil {
+		t.Fatalf("ListLocalBranches: %v", err)
+	}
+	want := []string{"feature-x", "feature-y", m.GetDefaultBranchNoErr(t)}
+	if !equalSlices(branches, want) {
+		t.Errorf("ListLocalBranches = %v, want %v (sorted ascending)", branches, want)
+	}
+}
+
+// TestListLocalBranches_NotARepo verifies ListLocalBranches fails
+// with a clear error when invoked against a non-git directory.
+// EXISTENCE: non-git path → error, no panic.
+func TestListLocalBranches_NotARepo(t *testing.T) {
+	dir := t.TempDir() // no git init
+	base := t.TempDir()
+	m := NewWorktreeManagerFromPaths(dir, base)
+
+	branches, err := m.ListLocalBranches()
+	if err == nil {
+		t.Fatalf("ListLocalBranches on non-repo: got nil err, branches=%v", branches)
+	}
+	if branches != nil {
+		t.Errorf("ListLocalBranches on non-repo: branches should be nil, got %v", branches)
+	}
+}
+
+// TestListLocalBranches_ExcludesRemoteRefs verifies that ListLocalBranches
+// returns only LOCAL refs (refs/heads/*), not origin/* refs. The picker
+// must not show "origin/main" alongside "main" — that's two entries for
+// the same logical branch and confuses the picker.
+//
+// We configure a fake remote, fetch its refs into remote-tracking refs,
+// then assert ListLocalBranches does NOT include any "origin/..." entry.
+func TestListLocalBranches_ExcludesRemoteRefs(t *testing.T) {
+	dir := newTestGitRepo(t)
+	base := t.TempDir()
+	m := NewWorktreeManagerFromPaths(dir, base)
+
+	// Set up a fake remote: a bare repo that mirrors the test repo.
+	remoteDir := filepath.Join(t.TempDir(), "remote.git")
+	{
+		c := exec.Command("git", "init", "--bare", "-q", remoteDir)
+		if out, err := c.CombinedOutput(); err != nil {
+			t.Fatalf("git init --bare: %v: %s", err, out)
+		}
+	}
+	{
+		c := exec.Command("git", "remote", "add", "origin", remoteDir)
+		c.Dir = dir
+		if out, err := c.CombinedOutput(); err != nil {
+			t.Fatalf("git remote add: %v: %s", err, out)
+		}
+	}
+	{
+		c := exec.Command("git", "push", "-q", "origin", m.GetDefaultBranchNoErr(t))
+		c.Dir = dir
+		if out, err := c.CombinedOutput(); err != nil {
+			t.Fatalf("git push: %v: %s", err, out)
+		}
+	}
+	{
+		c := exec.Command("git", "fetch", "-q", "origin")
+		c.Dir = dir
+		if out, err := c.CombinedOutput(); err != nil {
+			t.Fatalf("git fetch: %v: %s", err, out)
+		}
+	}
+
+	branches, err := m.ListLocalBranches()
+	if err != nil {
+		t.Fatalf("ListLocalBranches: %v", err)
+	}
+	for _, b := range branches {
+		if strings.HasPrefix(b, "origin/") || strings.Contains(b, "/") {
+			t.Errorf("ListLocalBranches returned non-local ref %q (got %v)", b, branches)
+		}
+	}
+}
+
+func contains(s []string, v string) bool {
+	for _, x := range s {
+		if x == v {
+			return true
+		}
+	}
+	return false
+}
+
+func equalSlices(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func TestBranchExists(t *testing.T) {
 	dir := newTestGitRepo(t)
 	base := t.TempDir()

@@ -839,6 +839,18 @@ func (m *Model) renderTicketForm() string {
 	fieldEndLines[formFieldBranch] = len(lines) - 1
 	currentLine = len(lines)
 
+	baseBranchField := m.renderBaseBranchSelector()
+	fieldStartLines[formFieldBaseBranch] = currentLine
+	lines = append(lines, pickFocus(formFieldBaseBranch)+pickLabel(formFieldBaseBranch, m.ticketFormField, activeLabelStyle, labelStyle).Render("Base Branch"))
+	lines = append(lines, "  "+descriptionStyle.Render("Branch to fork from (default: project default)"))
+	baseBranchLines := strings.Split(baseBranchField, "\n")
+	for _, bl := range baseBranchLines {
+		lines = append(lines, "  "+bl)
+	}
+	lines = append(lines, "")
+	fieldEndLines[formFieldBaseBranch] = len(lines) - 1
+	currentLine = len(lines)
+
 	fieldStartLines[formFieldLabels] = currentLine
 	lines = append(lines, labelsFocus+labelsLabel.Render("Labels"))
 	lines = append(lines, "  "+descriptionStyle.Render("Comma-separated tags (e.g. bug, urgent)"))
@@ -1096,6 +1108,62 @@ func (m *Model) renderBlockerSelector() string {
 
 	lines = append(lines, "")
 	lines = append(lines, m.dimStyle().Render("↑↓ navigate  Space/Enter toggle  Tab next"))
+
+	return strings.Join(lines, "\n")
+}
+
+// renderBaseBranchSelector renders the "Base Branch" picker field
+// (FEAT: pick original branch when creating a task).
+//
+// When the field is INACTIVE: render just the currently chosen branch
+// (mirrors the priority/worktree fields' compact display).
+//
+// When the field is ACTIVE: render the full navigable list with a
+// ▸ cursor on the highlighted branch. Up/down moves the cursor; the
+// current pick (m.ticketBaseBranch) is updated on every move, so the
+// form footer always shows what's selected.
+//
+// Empty candidates: surface a clear "no branches" state instead of
+// crashing — the user can still proceed (setupWorktree falls back to
+// GetDefaultBranch()).
+func (m *Model) renderBaseBranchSelector() string {
+	// Compact display when this field is not focused.
+	if m.ticketFormField != formFieldBaseBranch {
+		if m.ticketBaseBranch == "" {
+			return m.dimStyle().Render("(project default)")
+		}
+		return lipgloss.NewStyle().Foreground(m.colors.info).Render(m.ticketBaseBranch)
+	}
+
+	if len(m.baseBranchCandidates) == 0 {
+		return m.dimStyle().Render("No local branches in this project — will fall back to git default")
+	}
+
+	var lines []string
+	maxVisible := 5
+	for i, branch := range m.baseBranchCandidates {
+		if i >= maxVisible {
+			remaining := len(m.baseBranchCandidates) - maxVisible
+			lines = append(lines, m.dimStyle().Render(fmt.Sprintf("  ... and %d more", remaining)))
+			break
+		}
+
+		nameStyle := lipgloss.NewStyle().Foreground(m.colors.text)
+		cursor := "  "
+		if i == m.baseBranchListIndex {
+			cursor = lipgloss.NewStyle().Foreground(m.colors.info).Render("▸ ")
+			nameStyle = nameStyle.Bold(true).Foreground(m.colors.info)
+		}
+
+		marker := ""
+		if branch == m.ticketBaseBranch {
+			marker = lipgloss.NewStyle().Foreground(m.colors.success).Render(" ✓")
+		}
+		lines = append(lines, cursor+nameStyle.Render(branch)+marker)
+	}
+
+	lines = append(lines, "")
+	lines = append(lines, m.dimStyle().Render("↑↓ navigate  ⏎ select"))
 
 	return strings.Join(lines, "\n")
 }

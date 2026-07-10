@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/pi/awp/internal/project"
@@ -189,6 +190,42 @@ func (m *WorktreeManager) GetDefaultBranch() (string, error) {
 	}
 
 	return "main", nil
+}
+
+// ListLocalBranches returns every local branch name (refs/heads/*)
+// in the repo, sorted ascending. Remote-tracking refs (refs/remotes/*)
+// are intentionally excluded — the picker is for "where to fork from",
+// and showing both "main" and "origin/main" duplicates the same logical
+// branch.
+//
+// Returns an error when invoked against a non-git directory so callers
+// can surface "this project has no git repo" instead of silently
+// returning an empty list.
+//
+// We use `git for-each-ref` (machine-parseable, stable across git
+// versions) instead of `git branch` (porcelain varies; e.g. `--format`
+// is 2.7+). The `--format='%(refname:short)'` flag prints just the
+// short branch name (no "refs/heads/" prefix).
+func (m *WorktreeManager) ListLocalBranches() ([]string, error) {
+	cmd := exec.Command("git", "for-each-ref", "--format=%(refname:short)", "refs/heads/")
+	cmd.Dir = m.repoPath
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("failed to list branches in %s: %w", m.repoPath, err)
+	}
+
+	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+	branches := make([]string, 0, len(lines))
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		branches = append(branches, line)
+	}
+
+	sort.Strings(branches)
+	return branches, nil
 }
 
 func (m *WorktreeManager) DeleteBranch(branchName string) error {
