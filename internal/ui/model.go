@@ -58,11 +58,12 @@ const (
 	formFieldTitle       = 0
 	formFieldDescription = 1
 	formFieldBranch      = 2
-	formFieldLabels      = 3
-	formFieldPriority    = 4
-	formFieldWorktree    = 5
-	formFieldBlockedBy   = 6
-	formFieldProject     = 7
+	formFieldBaseBranch  = 3
+	formFieldLabels      = 4
+	formFieldPriority    = 5
+	formFieldWorktree    = 6
+	formFieldBlockedBy   = 7
+	formFieldProject     = 8
 )
 
 type Model struct {
@@ -118,6 +119,16 @@ type Model struct {
 	selectedProject    *project.Project
 	projectListIndex   int
 	addProjectPath     textinput.Model
+
+	// Base-branch picker state (FEAT: pick original branch when
+	// creating a task). baseBranchCandidates is populated from the
+	// SELECTED PROJECT's git repo via loadBaseBranches. The user
+	// navigates with j/k; the chosen value is read at save time
+	// into ticket.BaseBranch (which then drives setupWorktree /
+	// setupMainRepoBranch / prepareSpawn instead of GetDefaultBranch()).
+	baseBranchCandidates []string
+	baseBranchListIndex  int
+	ticketBaseBranch     string // current pick; defaults to project default branch
 
 	blockerCandidates  []*board.Ticket
 	selectedBlockers   map[board.TicketID]bool
@@ -1108,11 +1119,13 @@ func (m *Model) handleTicketFormMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		clickedField = formFieldDescription
 	case relY >= 11 && relY <= 13:
 		clickedField = formFieldBranch
-	case relY >= 15 && relY <= 17:
+	case relY >= 15 && relY <= 16:
+		clickedField = formFieldBaseBranch
+	case relY >= 18 && relY <= 20:
 		clickedField = formFieldLabels
-	case relY >= 19 && relY <= 21:
+	case relY >= 22 && relY <= 24:
 		clickedField = formFieldPriority
-	case relY >= 23:
+	case relY >= 26:
 		clickedField = formFieldProject
 	}
 
@@ -1202,6 +1215,8 @@ func (m *Model) handleTicketForm(msg tea.KeyMsg, isEdit bool) (tea.Model, tea.Cm
 		if !m.branchLocked {
 			m.branchInput, cmd = m.branchInput.Update(msg)
 		}
+	case formFieldBaseBranch:
+		cmd = m.handleBaseBranchNav(msg)
 	case formFieldLabels:
 		m.labelsInput, cmd = m.labelsInput.Update(msg)
 	case formFieldPriority:
@@ -1243,6 +1258,84 @@ func (m *Model) handleWorktreeToggle(msg tea.KeyMsg) tea.Cmd {
 	case "n", "N":
 		m.ticketUseWorktree = false
 	}
+	return nil
+}
+
+// loadBaseBranches populates m.baseBranchCandidates from the SELECTED
+// PROJECT's git repo, then sets m.ticketBaseBranch (and the cursor
+// index) to the project's default branch.
+//
+// Caller contract: m.selectedProject must be non-nil (set by
+// createNewTicket / editTicket / handleProjectSelection). When nil
+// (e.g., before the user has chosen a project), the picker stays
+// empty and ticketBaseBranch is set to "" — which downstream
+// setupWorktree / setupMainRepoBranch interprets as "fall back to
+// GetDefaultBranch()".
+//
+// On non-git / error paths, the picker stays empty; the form is still
+// usable and falls back to default branch behavior at worktree-creation
+// time.
+func (m *Model) loadBaseBranches() {
+	m.baseBranchCandidates = nil
+	m.baseBranchListIndex = 0
+	m.ticketBaseBranch = ""
+
+	if m.selectedProject == nil {
+		return
+	}
+	mgr := m.worktreeMgrs[m.selectedProject.ID]
+	if mgr == nil {
+		return
+	}
+	branches, err := mgr.ListLocalBranches()
+	if err != nil || len(branches) == 0 {
+		return
+	}
+	m.baseBranchCandidates = branches
+
+	defaultBranch, derr := mgr.GetDefaultBranch()
+	if derr != nil {
+		defaultBranch = branches[0]
+	}
+	m.ticketBaseBranch = defaultBranch
+	for i, b := range branches {
+		if b == defaultBranch {
+			m.baseBranchListIndex = i
+			break
+		}
+	}
+}
+
+// handleBaseBranchNav drives the picker on j/k / up/down keys.
+// Arrow keys, h/l, ctrl+n/p all navigate. Selection is committed
+// automatically (no Enter needed) — the chosen branch is mirrored
+// into m.ticketBaseBranch on every move so the user always sees the
+// current pick in the form footer.
+func (m *Model) handleBaseBranchNav(msg tea.KeyMsg) tea.Cmd {
+	if len(m.baseBranchCandidates) == 0 {
+		return nil
+	}
+
+	switch msg.String() {
+	case "j", "down":
+		m.baseBranchListIndex++
+		if m.baseBranchListIndex >= len(m.baseBranchCandidates) {
+			m.baseBranchListIndex = 0
+		}
+	case "k", "up":
+		m.baseBranchListIndex--
+		if m.baseBranchListIndex < 0 {
+			m.baseBranchListIndex = len(m.baseBranchCandidates) - 1
+		}
+	case "g", "home":
+		m.baseBranchListIndex = 0
+	case "G", "end":
+		m.baseBranchListIndex = len(m.baseBranchCandidates) - 1
+	default:
+		return nil
+	}
+
+	m.ticketBaseBranch = m.baseBranchCandidates[m.baseBranchListIndex]
 	return nil
 }
 
@@ -1546,6 +1639,8 @@ func (m *Model) focusCurrentField() {
 		m.descInput.Focus()
 	case formFieldBranch:
 		m.branchInput.Focus()
+	case formFieldBaseBranch:
+		break // picker is j/k-driven, no textinput to focus
 	case formFieldLabels:
 		m.labelsInput.Focus()
 	case formFieldPriority:
@@ -1589,6 +1684,7 @@ func (m *Model) saveTicketForm(isEdit bool) (tea.Model, tea.Cmd) {
 			if !m.branchLocked {
 				ticket.BranchName = branchName
 			}
+			ticket.BaseBranch = m.ticketBaseBranch
 			ticket.Labels = labels
 			ticket.Priority = m.ticketPriority
 			ticket.UseWorktree = m.ticketUseWorktree
@@ -1602,6 +1698,7 @@ func (m *Model) saveTicketForm(isEdit bool) (tea.Model, tea.Cmd) {
 		ticket := board.NewTicket(title, m.selectedProject.ID)
 		ticket.Description = desc
 		ticket.BranchName = branchName
+		ticket.BaseBranch = m.ticketBaseBranch
 		ticket.Labels = labels
 		ticket.Priority = m.ticketPriority
 		ticket.UseWorktree = m.ticketUseWorktree
@@ -2160,6 +2257,11 @@ func (m *Model) createNewTicket() (tea.Model, tea.Cmd) {
 	m.ticketPriority = 3
 	m.ticketUseWorktree = true
 
+	// Base-branch picker: load branches from the selected project's
+	// repo and default the pick to the project's default branch.
+	// (FEAT: pick original branch when creating a task.)
+	m.loadBaseBranches()
+
 	m.initBlockerCandidates("")
 	m.selectedBlockers = make(map[board.TicketID]bool)
 	m.blockerListIndex = 0
@@ -2196,6 +2298,20 @@ func (m *Model) editTicket() (tea.Model, tea.Cmd) {
 		m.ticketPriority = 3
 	}
 	m.ticketUseWorktree = ticket.UseWorktree
+
+	// Base-branch picker: load branches from the ticket's project's
+	// repo, then highlight the ticket's current BaseBranch (if any).
+	m.loadBaseBranches()
+	m.ticketBaseBranch = ticket.BaseBranch
+	if m.ticketBaseBranch != "" {
+		// Move the cursor to the existing pick so the user sees what's set.
+		for i, b := range m.baseBranchCandidates {
+			if b == ticket.BaseBranch {
+				m.baseBranchListIndex = i
+				break
+			}
+		}
+	}
 
 	m.initBlockerCandidates(ticket.ID)
 	m.selectedBlockers = make(map[board.TicketID]bool)
@@ -2429,7 +2545,14 @@ func (m *Model) setupWorktree(ticket *board.Ticket) error {
 	}
 
 	branchName := m.generateBranchName(ticket, proj)
-	baseBranch, _ := mgr.GetDefaultBranch()
+	// FEAT: pick original branch when creating a task. Honor the
+	// user's pick from the ticket form (ticket.BaseBranch); fall
+	// back to the project default (main/master) when empty (legacy
+	// tickets or older data).
+	baseBranch := ticket.BaseBranch
+	if baseBranch == "" {
+		baseBranch, _ = mgr.GetDefaultBranch()
+	}
 
 	path, err := mgr.CreateWorktree(branchName, baseBranch)
 	if err != nil {
@@ -2454,7 +2577,13 @@ func (m *Model) setupMainRepoBranch(ticket *board.Ticket) error {
 	}
 
 	branchName := m.generateBranchName(ticket, proj)
-	baseBranch, _ := mgr.GetDefaultBranch()
+	// FEAT: pick original branch when creating a task. Honor the
+	// user's pick from the ticket form (ticket.BaseBranch); fall
+	// back to the project default when empty.
+	baseBranch := ticket.BaseBranch
+	if baseBranch == "" {
+		baseBranch, _ = mgr.GetDefaultBranch()
+	}
 
 	ticket.WorktreePath = proj.RepoPath
 	ticket.BranchName = branchName

@@ -325,6 +325,10 @@ type Ticket struct {
     UseWorktree  bool   `json:"use_worktree"`
     WorktreePath string `json:"worktree_path,omitempty"`
     BranchName   string `json:"branch_name,omitempty"`
+    // BaseBranch is the branch to fork FROM when creating BranchName.
+    // Set by the ticket form's "Base Branch" picker (FEAT: pick original
+    // branch when creating a task). Empty means "use git default
+    // (origin/HEAD → main → master)" — backward-compat for legacy tickets.
     BaseBranch   string `json:"base_branch,omitempty"`
 
     // ★ Pi session 绑定
@@ -478,6 +482,23 @@ backlog ⇄ in_progress
 | `backlog` → `in_progress` | ✅ | Space 键:开始工作 |
 | `in_progress` → `backlog` | ✅ | Space 键:暂停 / 重新考虑优先级 |
 | `backlog` → `backlog` | ✅ | no-op |
+
+### 5.5 Base Branch Picker(FEAT: 选源分支)
+
+**需求来源**:用户提报——“awp - pick original branch”,原意是“我用 awp 在 `develop` 分支上做新功能,awp 却默认从 `main` fork 出一个新分支,这不对”。
+
+**之前的行为**:`Model.setupWorktree` / `Model.setupMainRepoBranch` / `Model.prepareSpawn` 三处硬编码调用 `mgr.GetDefaultBranch()`(其逻辑:`refs/remotes/origin/HEAD` → `main` → `master` → 退回字符串 `"main"`)。用户**没有任何入口**选源分支。
+
+**改动**:
+1. `internal/git/worktree.go` — 新增 `(*WorktreeManager).ListLocalBranches()`(内部走 `git for-each-ref --format='%(refname:short)' refs/heads/`,只返回本地分支、排除 `origin/*`,字典序排)。
+2. `internal/ui/model.go` — Ticket 表单在 Branch 字段后插入 `formFieldBaseBranch`。对应状态:`baseBranchCandidates []string` / `baseBranchListIndex int` / `ticketBaseBranch string`。
+3. `loadBaseBranches()` — 进入 / 编辑 ticket 时从 `selectedProject` 的 git 仓库加载本地分支,默认选中 `mgr.GetDefaultBranch()`。
+4. `handleBaseBranchNav(msg)` — `j`/`k` / `↑`/`↓` / `g`/`G` 在候选间移动,每次移动同步更新 `m.ticketBaseBranch`。
+5. `saveTicketForm(isEdit)` — 提交时将 `m.ticketBaseBranch` 写入 `ticket.BaseBranch`。
+6. `setupWorktree` / `setupMainRepoBranch` — 优先用 `ticket.BaseBranch`,为空才退回 `GetDefaultBranch()`(legacy ticket 兼容)。
+7. `internal/ui/view.go` — 新增 `renderBaseBranchSelector()`:聚焦时展示完整列表(带 `▸` 光标与 `✓` 标记),未聚焦时仅显示当前选中的分支名(紧凑模式,跟 Priority / Worktree 一致)。
+
+**契约**:如果 `ticket.BaseBranch` 非空,所有三条创建路径(setupWorktree / setupMainRepoBranch / prepareSpawn)都必须以此为 fork 起点;为空则退回 `GetDefaultBranch()`(原有行为不变)。
 | `in_progress` → `in_progress` | ✅ | no-op |
 | 其它 | — | 不存在 |
 
