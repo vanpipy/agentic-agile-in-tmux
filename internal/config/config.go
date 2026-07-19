@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 // defaultInitPrompt is the template used when Pi.InitPrompt is empty.
@@ -51,6 +52,11 @@ type Config struct {
 	Defaults BoardSettings     `json:"defaults"`
 	Cleanup  CleanupSettings   `json:"cleanup"`
 	Behavior BehaviorSettings  `json:"behavior"`
+
+	// 2-cycle postman settings (SYSTEM_DESIGN.md §18).
+	Wiking WikingConfig `json:"wiking"`
+	Coding CodingConfig `json:"coding"`
+	Cycle  CycleConfig  `json:"cycle"`
 }
 
 // PiConfig configures the pi coding agent. Command, Args, and
@@ -95,6 +101,93 @@ type CleanupSettings struct {
 	ForceWorktreeRemoval bool `json:"force_worktree_removal"` // Force removal even with uncommitted changes
 }
 
+// RoleConfig is shared shape for wiking/coding role bindings
+// (per SYSTEM_DESIGN.md §18.3). Fields:
+//   - Prompt: literal text passed to the role's pi instance. v1 is
+//     plain text (no template substitution). Future versions may
+//     support {article}, {round} placeholders.
+//   - CWD: directory the role works in. Empty = inherit from the
+//     cycle's workspace wiki dir (computed by the cycle driver).
+//   - AllowedTools: optional pi --allowed-tools list (gated
+//     features); nil = no restriction.
+type RoleConfig struct {
+	Prompt       string   `json:"prompt,omitempty"`
+	CWD          string   `json:"cwd,omitempty"`
+	AllowedTools []string `json:"allowed_tools,omitempty"`
+}
+
+// WikingConfig is the wiking-role binding.
+type WikingConfig struct {
+	RoleConfig
+}
+
+// CodingConfig is the coding-role binding.
+type CodingConfig struct {
+	RoleConfig
+}
+
+// CycleConfig controls 2-cycle iteration behavior
+// (SYSTEM_DESIGN.md §18.10). All durations are positive;
+// Threshold is in [0, 100]; MaxNoProgress >= 1.
+type CycleConfig struct {
+	Threshold int `json:"threshold"` // score to accept, [0,100], default 90
+
+	IdleInterval time.Duration `json:"idle_interval"`     // default 30s
+	WikingInterval time.Duration `json:"wiking_interval"` // default 5s
+	CodingInterval time.Duration `json:"coding_interval"` // default 10s
+
+	WikingTimeout time.Duration `json:"wiking_timeout"` // default 30m
+	CodingTimeout time.Duration `json:"coding_timeout"` // default 60m
+
+	MaxNoProgress int `json:"max_no_progress"` // default 20 (per §18.10)
+}
+
+// DefaultCycleConfig returns §18.10 defaults.
+func DefaultCycleConfig() CycleConfig {
+	return CycleConfig{
+		Threshold:      90,
+		IdleInterval:   30 * time.Second,
+		WikingInterval: 5 * time.Second,
+		CodingInterval: 10 * time.Second,
+		WikingTimeout:  30 * time.Minute,
+		CodingTimeout:  60 * time.Minute,
+		MaxNoProgress:  20,
+	}
+}
+
+// defaultWikingPrompt is the literal prompt passed to a wiking-role
+// pi instance. It includes the marker protocol so pi knows what
+// sentinel to write.
+//
+// Future: this could use {article} and {round} placeholders.
+const defaultWikingPrompt = `You are the WIKING role in a wiking↔coding 2-cycle iteration.
+Read the article-N.md file under your working directory (N is the current round).
+Produce a refined draft and write it BACK to the same article-N.md path.
+
+End your output with EXACTLY this single line on its own line:
+
+    --- end ---
+
+That marker is the postman's witness that you finished. Do not write
+the score marker (--- end with N ---) — that belongs to the coding role.`
+
+// defaultCodingPrompt is the literal prompt passed to a coding-role
+// pi instance.
+const defaultCodingPrompt = `You are the CODING role in a wiking↔coding 2-cycle iteration.
+Read the article-N.md file (the wiking's draft) and write your review
+to article-N-feedback-N.md in the same directory.
+
+Score the article from 0 (terrible) to 100 (perfectly applicable).
+End your output with EXACTLY this single line on its own line:
+
+    --- end with N ---
+
+Substitute N with your integer score. The postman polls for that
+marker to drive the next round. If you set N >= 90 the postman syncs
+the article and the cycle ends; lower scores trigger another wiking
+round.`
+
+
 // DefaultConfig returns the default configuration. Every field
 // here is overridable via config.json, but the defaults are chosen
 // so that awp works out-of-the-box without any config file.
@@ -123,6 +216,21 @@ func DefaultConfig() *Config {
 			DeleteBranch:         false,
 			ForceWorktreeRemoval: false,
 		},
+		Wiking: WikingConfig{
+			RoleConfig: RoleConfig{
+				Prompt:       defaultWikingPrompt,
+				CWD:          "",
+				AllowedTools: nil,
+			},
+		},
+		Coding: CodingConfig{
+			RoleConfig: RoleConfig{
+				Prompt:       defaultCodingPrompt,
+				CWD:          "",
+				AllowedTools: nil,
+			},
+		},
+		Cycle: DefaultCycleConfig(),
 	}
 }
 

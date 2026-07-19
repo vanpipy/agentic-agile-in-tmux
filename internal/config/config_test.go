@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestDefaultConfig(t *testing.T) {
@@ -37,6 +38,139 @@ func TestDefaultConfig(t *testing.T) {
 	if !cfg.UI.SidebarVisible {
 		t.Error("UI.SidebarVisible should be true by default")
 	}
+
+	// Postman (§18.10 defaults)
+	if cfg.Cycle.Threshold != 90 {
+		t.Errorf("Cycle.Threshold = %d; want 90", cfg.Cycle.Threshold)
+	}
+	if cfg.Cycle.IdleInterval.Seconds() != 30 {
+		t.Errorf("Cycle.IdleInterval = %v; want 30s", cfg.Cycle.IdleInterval)
+	}
+	if cfg.Cycle.WikingInterval.Seconds() != 5 {
+		t.Errorf("Cycle.WikingInterval = %v; want 5s", cfg.Cycle.WikingInterval)
+	}
+	if cfg.Cycle.CodingInterval.Seconds() != 10 {
+		t.Errorf("Cycle.CodingInterval = %v; want 10s", cfg.Cycle.CodingInterval)
+	}
+	if cfg.Cycle.WikingTimeout.Minutes() != 30 {
+		t.Errorf("Cycle.WikingTimeout = %v; want 30m", cfg.Cycle.WikingTimeout)
+	}
+	if cfg.Cycle.CodingTimeout.Minutes() != 60 {
+		t.Errorf("Cycle.CodingTimeout = %v; want 60m", cfg.Cycle.CodingTimeout)
+	}
+	if cfg.Cycle.MaxNoProgress != 20 {
+		t.Errorf("Cycle.MaxNoProgress = %d; want 20", cfg.Cycle.MaxNoProgress)
+	}
+	if cfg.Wiking.Prompt == "" {
+		t.Error("Wiking.Prompt should have a default")
+	}
+	if cfg.Coding.Prompt == "" {
+		t.Error("Coding.Prompt should have a default")
+	}
+}
+
+func TestConfigCycle_RoundTrip(t *testing.T) {
+	// JSON marshaling preserves all fields including the new ones.
+	original := DefaultConfig()
+	original.Cycle.Threshold = 75
+	original.Cycle.IdleInterval = 7 * time.Second
+	original.Wiking.Prompt = "custom wiking prompt"
+	original.Wiking.CWD = "/custom/wiki"
+	original.Wiking.AllowedTools = []string{"bash", "read", "write"}
+	original.Coding.AllowedTools = []string{"bash", "read"}
+
+	data, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+
+	var loaded Config
+	if err := json.Unmarshal(data, &loaded); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+
+	if loaded.Cycle.Threshold != 75 {
+		t.Errorf("threshold round-trip got %d want 75", loaded.Cycle.Threshold)
+	}
+	if loaded.Cycle.IdleInterval != 7*time.Second {
+		t.Errorf("idle_interval round-trip got %v want 7s", loaded.Cycle.IdleInterval)
+	}
+	if loaded.Wiking.Prompt != "custom wiking prompt" {
+		t.Errorf("wiking.prompt round-trip got %q", loaded.Wiking.Prompt)
+	}
+	if loaded.Wiking.CWD != "/custom/wiki" {
+		t.Errorf("wiking.cwd round-trip got %q", loaded.Wiking.CWD)
+	}
+	if len(loaded.Wiking.AllowedTools) != 3 {
+		t.Errorf("wiking.allowed_tools round-trip got %d items", len(loaded.Wiking.AllowedTools))
+	}
+}
+
+func TestConfigValidate_CycleErrors(t *testing.T) {
+	cases := []struct {
+		name string
+		mut  func(*Config)
+		// sub is the section/sub-field prefix the error should mention.
+		mention string
+	}{
+		{
+			name:    "threshold too high",
+			mut:     func(c *Config) { c.Cycle.Threshold = 200 },
+			mention: "cycle.threshold",
+		},
+		{
+			name:    "threshold negative",
+			mut:     func(c *Config) { c.Cycle.Threshold = -1 },
+			mention: "cycle.threshold",
+		},
+		{
+			name:    "max_no_progress zero",
+			mut:     func(c *Config) { c.Cycle.MaxNoProgress = 0 },
+			mention: "cycle.max_no_progress",
+		},
+		{
+			name:    "wiking_interval zero",
+			mut:     func(c *Config) { c.Cycle.WikingInterval = 0 },
+			mention: "cycle.wiking_interval",
+		},
+		{
+			name:    "coding_timeout zero",
+			mut:     func(c *Config) { c.Cycle.CodingTimeout = 0 },
+			mention: "cycle.coding_timeout",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := DefaultConfig()
+			tc.mut(cfg)
+			r := cfg.Validate()
+			if !r.HasErrors() {
+				t.Fatal("expected validation errors, got none")
+			}
+			found := false
+			for _, e := range r.Errors {
+				if e.Section+"."+e.Field == tc.mention {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Fatalf("expected error mentioning %q, got: %s", tc.mention, r.FormatErrors())
+			}
+		})
+	}
+}
+
+func TestConfigValidate_DefaultHasNoErrors(t *testing.T) {
+	// The shipped default config must validate clean.
+	cfg := DefaultConfig()
+	r := cfg.Validate()
+	if r.HasErrors() {
+		t.Fatalf("default config should be error-free, got:\n%s", r.FormatErrors())
+	}
+	// Empty prompts warn — the shipped defaults supply prompts, so
+	// only warnings about extended cleanup or theme errors might appear.
 }
 
 func TestConfigDir(t *testing.T) {

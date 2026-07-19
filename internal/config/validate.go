@@ -91,6 +91,7 @@ func (c *Config) Validate() *ValidationResult {
 	result := &ValidationResult{}
 	c.validateDefaults(result)
 	c.validateUI(result)
+	c.validateCycle(result)
 	return result
 }
 
@@ -145,4 +146,50 @@ func (c *Config) validateUI(r *ValidationResult) {
 func validateTemplate(tmpl string) error {
 	_, err := template.New("check").Parse(tmpl)
 	return err
+}
+
+// validateCycle checks the CycleConfig + role configs (§18.10).
+// All durations must be non-negative; Threshold in [0, 100];
+// MaxNoProgress >= 1; prompts can be empty (cycle driver warns).
+func (c *Config) validateCycle(r *ValidationResult) {
+	if c.Cycle.Threshold < 0 || c.Cycle.Threshold > 100 {
+		r.AddError("cycle", "threshold",
+			fmt.Sprintf("must be in [0, 100] (got %d)", c.Cycle.Threshold),
+			c.Cycle.Threshold)
+	}
+	if c.Cycle.MaxNoProgress < 1 {
+		r.AddError("cycle", "max_no_progress",
+			fmt.Sprintf("must be >= 1 (got %d)", c.Cycle.MaxNoProgress),
+			c.Cycle.MaxNoProgress)
+	}
+	if c.Cycle.IdleInterval < 0 {
+		r.AddError("cycle", "idle_interval",
+			"must be non-negative", c.Cycle.IdleInterval)
+	}
+	if c.Cycle.WikingInterval <= 0 {
+		r.AddError("cycle", "wiking_interval",
+			"must be positive", c.Cycle.WikingInterval)
+	}
+	if c.Cycle.CodingInterval <= 0 {
+		r.AddError("cycle", "coding_interval",
+			"must be positive", c.Cycle.CodingInterval)
+	}
+	if c.Cycle.WikingTimeout <= 0 {
+		r.AddError("cycle", "wiking_timeout",
+			"must be positive", c.Cycle.WikingTimeout)
+	}
+	if c.Cycle.CodingTimeout <= 0 {
+		r.AddError("cycle", "coding_timeout",
+			"must be positive", c.Cycle.CodingTimeout)
+	}
+	if c.Wiking.Prompt == "" {
+		r.AddWarning("wiking", "prompt",
+			"empty prompt; wiking role will run with no instruction",
+			nil)
+	}
+	if c.Coding.Prompt == "" {
+		r.AddWarning("coding", "prompt",
+			"empty prompt; coding role will run with no instruction",
+			nil)
+	}
 }
