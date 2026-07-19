@@ -1746,8 +1746,227 @@ func (e *TestEnv) WaitForPiState(t *testing.T, ticketID string, want PiState, ti
 - 任何对产品形态的质疑,从本文件开始讨论
 - 本文件不在 git 中被自动生成;它是 source of truth
 
+## 18. Postman / 2-cycle Dispatch
+
+> awp 作为 dumb postman,**协调 wiking ↔ coding 两个 pi 角色的迭代**
+> (iterate)。daemon 本身不调 LLM,只看文件末尾的 marker 决定
+> continue / sync,走 §18.5 marker 协议 + §18.6 events 协议。设计哲学
+> 与 `AGENTS.md §3.1 Pi only`一致 — 不引入 Agent 抽象,不引第二份
+> 通信 substrate。
+
+### 18.1 目标 (Goal)
+
+让用户在一条 article 上**启动 wiking ↔ coding 2-cycle 迭代**,直到
+coding 评分 ≥ 阈值 (默认 90)。产物:
+
+- `article-{n}.md` — wiking 每一轮的草稿
+- `article-{n}-feedback-{n}.md` — coding 每一轮的反馈
+- `article.md` — 接受时同步的 canonical 版本
+- `events.jsonl` — 过程审计流
+
+### 18.2 非目标 (Non-Goals)
+
+- **不做 Agent 接口** — wiking / coding 是 slot,不是 type。
+  `internal/wiking/dispatch.go` 里的 Role binding 填充之,与既有
+  `internal/agent.Pane` 同形,但属另一个 domain。
+- **不抢 pi 的 RPC 协议** — 走 spawn + tail marker,不做 prompt /
+  steer / abort (这是 §6 pi 集成的领域,cycle 不交叉)。
+- **不引消息队列 / IPC / 共享内存** — 文件走一切。
+- **不做 LLM-in-the-loop daemon** — daemon 本身不调 LLM。
+- **不破坏既有 17 个 Mode** — `ModeCycle` 与之同形,sub-Model 模式
+  与 `eventpane` / `terminalpane` 一致。
+
+### 18.3 三个职责 (Three Responsibilities)
+
+| 职责 | 含义 | 实现位置 |
+|---|---|---|
+| **Workspace** | 文件路径协议 + 命名约定 + resume-from-disk | `internal/wiking/workspace.go` |
+| **Dispatch** | 按 role binding spawn pi 子进程 | `internal/wiking/dispatch.go` |
+| **Signal** | marker 解析 + events 写入 + tick driver | `internal/wiking/{marker,events,cycle}.go` |
+
+### 18.4 两种入口,一个库 (Two Entry Points, One Library)
+
+```
+headless                              in-TUI
+─────────                             ─────────
+awp cycle <article-stem>              <c> hotkey in kanban
+  │                                     │
+  ▼                                     ▼
+cmd/awp/cycle.go                       internal/ui/model.go
+holds *Cycle                           holds *Cycle
+  │                                     │
+  └──────────────► shared ◄──────────────┘
+                       │
+                       ▼
+              internal/wiking/Cycle
+              (one library, two drivers)
+```
+
+差异只在 driver:
+
+- **headless**: goroutine + `time.Ticker` + `select` + `context.Context`。
+- **in-TUI**: parent model 持有,tick 通过既有 `tickAgentStatus` 扩展
+  (`drainCycleEvents` arm 复用现有 5s cadence)。
+
+### 18.5 Marker 协议 (协议的核心)
+
+| 文件 | Marker (最后一行) | 含义 |
+|---|---|---|
+| `article-{N}.md` (wiking 产物) | `--- end ---` | wiking 完成 |
+| `article-{N}-feedback-{N}.md` (coding 产物) | `--- end with {N} ---` | coding 完成,N ∈ [0, 100] |
+
+**严格解析器 (strict-parser) policy**:`--- end with abc ---` 视作
+malformed,**不**视作"未完成"。后果:保持 polling,记 WARN,但不切 phase;
+切 phase 必须等到 marker 合法出现(或 `phase_timeout`,见 §18.10)。
+
+实现要点:`bufio.Scanner` 自然吸收空行 / 不全 trailing newline;只在
+regex 不匹配时报 malformed。同一文件多个 marker(异常):只认最后一行,
+pre-marker 行被忽略。
+
+### 18.6 Events 协议 (audit log)
+
+文件:`~/.awp/cycle/{cycle-id}/events.jsonl`,append-only,每行一个 JSON
+object。
+
+```jsonl
+{"v":1,"id":"01HZXY2...","ts":"2026-07-18T03:21:44.123Z","type":"round_started","round":2,"article":"extend-update.md"}
+{"v":1,"id":"01HZXY2...","ts":"...","type":"wiking_done","round":2,"duration_ms":12345,"marker_path":"/wiki/article-2.md"}
+{"v":1,"id":"01HZXY2...","ts":"...","type":"score_above_threshold","round":5,"score":92,"threshold":90}
+{"v":1,"id":"01HZXY2...","ts":"...","type":"synced","round":5,"from":".../article-5.md","to":".../article.md"}
+{"v":1,"id":"01HZXY2...","ts":"...","type":"cycle_accepted","rounds":5,"final_score":92,"duration_ms":678900}
+```
+
+字段约束:
+
+| 字段 | 类型 | 约束 |
+|---|---|---|
+| `v` | int | 当前必为 1;reader 拒绝 `v > 1` (warn 后 skip) |
+| `id` | string | ULID (26 chars, lex-sortable by time, unique) |
+| `ts` | string | RFC3339 nanosecond UTC;只用于人类读,不参与排序 |
+| `type` | string | snake_case 稳定枚举 (见 §18.7) |
+| payload | per-type | 严格 schema;后续可加可选字段,不能改必填 |
+
+写入:per-line `os.File.Write + Sync`,crash 在行间 = 行完整或不存在
+(`bufio.Scanner` 丢弃半行)。Audit / replay 走 cursor = last ULID。
+
+**Witness = marker,News = events**:`wiking_done` / `coding_done` /
+`score_parsed` 这些事件,只在对应 marker 被成功解析后写入。从
+events.jsonl 看到的 cycle 状态,与从 markers 重新推导的一致 ——
+两路独立读,同一真值。
+
+### 18.7 Event Types (v1 完整列表)
+
+`round_started`, `wiking_spawned`, `wiking_done`, `coding_spawned`,
+`coding_done`, `score_parsed`, `score_above_threshold`, `loop`,
+`synced`, `cycle_accepted`, `cycle_failed`, `phase_timeout`,
+`no_progress`, `error`, `terminated`。
+
+每 type 的 payload shape 在 `internal/wiking/events.go` 实现时与 RED
+test 一同固定(本节不重复)。
+
+### 18.8 Score Policy
+
+```
+score, ok := ParseScore(feedback_last_line)
+switch {
+case !ok:                            // malformed marker
+    log.Warn("malformed marker", "path", ...)
+    // keep polling, no transition
+case score >= cycle.threshold:       // default 90
+    c.phase = Sync
+    events.Append(score_above_threshold{score})
+case score < cycle.threshold:
+    c.roundN++
+    c.phase = WikingRun
+    events.Append(loop{score})
+}
+```
+
+`threshold` 在 `~/.config/awp/config.json` 的 `cycle.threshold` 中,
+默认 90,范围 [0, 100]。
+
+### 18.9 Lifecycle:父 Model 拥有 cycle (parent-owned)
+
+```
+parent Model (model.go)              <-- cycle lives here, process-level
+├─ m.activeCycle  *wiking.Cycle     <-- 进程生命周期
+├─ m.cycleEvents  <-chan Event      <-- 单一真源
+├─ m.cycleExt     chan<- ExtMsg     <-- 单一控制点
+├─ m.cycleDone    <-chan error      <-- 单一退出点
+└─ cyclepane (sub `tea.Model`)      <-- VIEWER, optionally focused
+   └─ 当 ModeCycle 聚焦时 drain m.cycleEvents;其它时候由父 drain
+      出 toast (复用 §3.4 的 notification 管道)
+```
+
+设计理由 (MV-P1):让 cycle 跟着进程走,而不是 mode 走。用户可以从
+cyclepane esc 回 kanban 做 ticket 工作,而 cycle 继续在后台跑(header
+chip 留存)。父 model 始终在 `tickAgentStatus` 上抬一手,事件来就 toast
+走。
+
+### 18.10 Tick Cadence (defaults,configurable)
+
+| Phase | Tick interval | Phase timeout | No-progress ticks |
+|---|---|---|---|
+| `Idle` | 30 s | — | — |
+| `WikingRun` | 5 s | 30 min | 20 (~100 s) |
+| `CodingRun` | 10 s | 60 min | 20 (~200 s) |
+| `Decide` | 0 (one-shot) | — | — |
+| `Sync` | 0 (one-shot) | — | — |
+| `Done` | — | — | — |
+
+所有数值在 `internal/config/config.go::CycleConfig` 中。用户改
+`cycle.*` key 即可,无须重编译。
+
+### 18.11 Concurrency 模型
+
+- `*wiking.Cycle` 状态只被 tick goroutine 触碰,**无 mutex**。
+- 与外部的交互通过 3 个 channel:`events` (cap 32) / `ext` (cap 1) /
+  `done` (cap 1)。
+- cyclepane 作为 sub-`tea.Model` 完全不持 state mutation 权限 ——
+  只 drain channel + render View,无写回。
+- cancel / timeout 一律走 `<-ctx.Done()` 或 `<-timeout.C`,无 dirty
+  flag,无 sleep + check。
+- 测试时 `*Cycle` 的 ticker / timer / clock 全部 injectable,无墙钟依赖。
+
+### 18.12 Hotkeys (TUI mode)
+
+| Key | Action | 生效 mode |
+|---|---|---|
+| `c` | 在选中 article 上 start cycle (开 modal) | ModeNormal |
+| `C` | 用当前 ModeCycle article 重启 | ModeCycle |
+| `x` | Cancel 当前 cycle | 任何 active cycle 时 |
+| `s` | Skip 当前 round (force-loop) | 同上 |
+| `f` | Force-accept (bypass score,二次确认) | 同上 |
+| `j/k` | 在 cyclepane 内 scroll event history | ModeCycle |
+| `Enter` | 用 `$EDITOR` 打开 article / feedback | ModeCycle |
+| `e` | inline 只读打开 article | ModeCycle |
+| `esc` | 回 kanban (cycle 继续跑) | ModeCycle |
+| `→` (chip 焦点) | 从 kanban 跳到 ModeCycle | 任何 mode |
+
+完整 keymap 落在 `internal/ui/view.go::modeConfig` 中,本节不重复冲突表。
+
+### 18.13 与既有章节的关系 (避免重复)
+
+- §3.1:画的是 kanban + pi panes 拓扑;§18 是新增模块,仍走 pi RPC,不改
+  substrate。
+- §5:数据模型是 ticket / worktree / project。article、feedback、
+  events.jsonl 在 wiki repo + `~/.awp/cycle/` 内,**不**进 ticket store。
+- §6:Pi 集成走 RPC。cycle 只用 spawn + read marker,不用 prompt /
+  steer / abort。
+- §7:UI 设计 — `ModeCycle` 与既有 17 个 Mode 同形;sub-Model 模式
+  (`eventpane` / `terminalpane`) 沿用。
+
+### 18.14 未来议题 (out of scope here)
+
+- 多并发 cycles(目前单 active cycle);未来 sidebar 列候选。
+- cycle 跨机器(NFS / ssh);今天只在本地进程。
+- 自定义 wiking role(非 pi agent);今天按 `AGENTS.md §3.1` 强制 pi。
+- cycles 间共享 state(全局 leaderboard 等);每 cycle 独立。
+- 线程 scope:`internal/wiking` 走 §6.1 的 `command-line args` ,调用方
+  (headless sub-command 或 `model.go`)负责传 cwd。
+
 ---
 
 **版本**:awp-design
-**状态**:已就绪,等待用户确认 → 进入 Phase 0
+**状态**:Phase 1 待确认 (新分支 `feat/postman-cycle` 上 `§18` 草案)
 **维护者**:awp contributors
