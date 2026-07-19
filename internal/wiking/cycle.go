@@ -618,7 +618,10 @@ func (c *Cycle) appendEvent(ev Event) {
 		ev.Round = &n
 	}
 	if c.cfg.Logger != nil {
-		c.cfg.Logger.Info("cycle event", "type", ev.Type, "round", *ev.Round)
+		// Debug level: the JSONL log AND the Events channel are the
+		// primary surfaces; logging at Info here would spam stdout
+		// during a 30-minute cycle.
+		c.cfg.Logger.Debug("cycle event", "type", ev.Type, "round", *ev.Round)
 	}
 	if c.log != nil {
 		_ = c.log.Append(ev)

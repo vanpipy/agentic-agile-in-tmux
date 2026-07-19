@@ -17,6 +17,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -356,6 +357,306 @@ func TestCycle_ResumeFromDiskSeedsRoundN(t *testing.T) {
 	}
 }
 
+// Sync phase: a high-score feedback marker triggers SyncOnAccept
+// (article-N.md → article.md) + cycle_accepted event.
+func TestCycle_HighScoreSyncsAndAccepts(t *testing.T) {
+	cyc, h := newCycleForTest(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go func() { _ = cyc.Run(ctx) }()
+
+	// First tick: Idle -> WikingRun
+	h.fire()
+
+	// Wait for wiking_spawned (entering WikingRun)
+	deadline := time.After(500 * time.Millisecond)
+	for {
+		select {
+		case ev := <-cyc.Events:
+			if ev.Type == "wiking_spawned" {
+				goto inWiking
+			}
+		case <-deadline:
+			t.Fatal("never reached WikingRun")
+		}
+	}
+inWiking:
+	// Write both markers with a high score.
+	if err := os.WriteFile(cyc.Workspace().WikingPath(cyc.RoundN()),
+		[]byte("body\n--- end ---\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cyc.Workspace().FeedbackPath(cyc.RoundN()),
+		[]byte("good\n--- end with 92 ---\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Fire ticks. The first tick after writing should advance through
+	// WikingRun (marker found) and CodingRun (score parsed) and into
+	// Decide (>= threshold) and Sync. One more tick triggers PhaseSync.
+	for i := 0; i < 4; i++ {
+	drain:
+		for {
+			select {
+			case <-cyc.Events:
+			default:
+				break drain
+			}
+		}
+		h.fire()
+	}
+
+	// Wait for cycle_accepted event.
+	deadline2 := time.After(500 * time.Millisecond)
+	for {
+		select {
+		case ev := <-cyc.Events:
+			if ev.Type == "cycle_accepted" {
+				// Verify canonical article.md was written.
+				canon, err := os.ReadFile(cyc.Workspace().CanonicalPath())
+				if err != nil {
+					t.Fatalf("canonical missing: %v", err)
+				}
+				if !strings.Contains(string(canon), "--- end ---") {
+					t.Fatalf("canonical doesn't have wiking-end marker: %q", canon)
+				}
+				return
+			}
+		case <-deadline2:
+			t.Fatal("never observed cycle_accepted")
+		}
+	}
+}
+
+// Loop phase: a below-threshold score triggers Loop (roundN++,
+// re-spawn wiking on next round).
+func TestCycle_LowScoreLoopsAndAdvancesRound(t *testing.T) {
+	cyc, h := newCycleForTest(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go func() { _ = cyc.Run(ctx) }()
+
+	h.fire()
+	deadline := time.After(500 * time.Millisecond)
+	for {
+		select {
+		case ev := <-cyc.Events:
+			if ev.Type == "wiking_spawned" {
+				goto inWiking
+			}
+		case <-deadline:
+			t.Fatal("never reached WikingRun")
+		}
+	}
+inWiking:
+	initialRound := cyc.RoundN()
+
+	if err := os.WriteFile(cyc.Workspace().WikingPath(initialRound),
+		[]byte("body\n--- end ---\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cyc.Workspace().FeedbackPath(initialRound),
+		[]byte("needs work\n--- end with 50 ---\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	for i := 0; i < 4; i++ {
+	drain:
+		for {
+			select {
+			case <-cyc.Events:
+			default:
+				break drain
+			}
+		}
+		h.fire()
+	}
+
+	// Wait for the loop event.
+	deadline2 := time.After(500 * time.Millisecond)
+	var sawLoop bool
+	for {
+		select {
+		case ev := <-cyc.Events:
+			if ev.Type == "loop" {
+				sawLoop = true
+			}
+			if sawLoop && ev.Type == "wiking_spawned" {
+				// RoundN should have advanced.
+				if cyc.RoundN() <= initialRound {
+					t.Fatalf("roundN did not advance: got %d want > %d",
+						cyc.RoundN(), initialRound)
+				}
+				return
+			}
+		case <-deadline2:
+			if !sawLoop {
+				t.Fatal("never observed loop event")
+			}
+			t.Fatal("never observed post-loop wiking_spawned")
+		}
+	}
+}
+
+// Skip ext: ExtSkip during WikingRun transitions to Decide with
+// synthetic score 0 (forces loop).
+func TestCycle_ExtSkipFromWiking(t *testing.T) {
+	cyc, h := newCycleForTest(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go func() { _ = cyc.Run(ctx) }()
+
+	h.fire()
+	deadline := time.After(500 * time.Millisecond)
+	for {
+		select {
+		case ev := <-cyc.Events:
+			if ev.Type == "wiking_spawned" {
+				cyc.Ext <- ExtMsg{Kind: ExtSkip}
+				goto afterSkip
+			}
+		case <-deadline:
+			t.Fatal("never reached WikingRun")
+		}
+	}
+afterSkip:
+	// Fire a tick to drive Decide → Loop (since lastScore=0).
+	h.fire()
+
+	// We expect skipped event and then round_started (re-loop).
+	deadline2 := time.After(500 * time.Millisecond)
+	var sawSkip, sawNewRound bool
+	for {
+		select {
+		case ev := <-cyc.Events:
+			if ev.Type == "skipped" {
+				sawSkip = true
+			}
+			if ev.Type == "round_started" {
+				sawNewRound = true
+			}
+			if sawSkip && sawNewRound {
+				return
+			}
+		case <-deadline2:
+			t.Fatalf("sawSkip=%v sawNewRound=%v", sawSkip, sawNewRound)
+		}
+	}
+}
+
+// Spawn with binary: when cfg.Binary != "", the cycle actually
+// exec's the binary via dispatch. We use a fake script that exits
+// cleanly so we don't depend on a real pi install. We verify the
+// spawn event includes a non-zero PID (proof of real exec).
+func TestCycle_SpawnWikingWithBinary(t *testing.T) {
+	wiki := t.TempDir()
+	awp := t.TempDir()
+	bin := writeFakeCycleBin(t, "ok.sh", "exit 0\n")
+
+	tickCh := make(chan time.Time, 1)
+	timerCh := make(chan time.Time, 1)
+	cfg := Config{
+		WikiDir: wiki, RunID: "spawn", AWPHome: awp,
+		Threshold:      90,
+		IdleInterval:   100 * time.Millisecond,
+		WikingInterval: 100 * time.Millisecond,
+		CodingInterval: 100 * time.Millisecond,
+		WikingTimeout:  5 * time.Second,
+		CodingTimeout:  5 * time.Second,
+		MaxNoProgress:  100, // don't trip this; we test spawn not no-progress
+		Wiking:  RoleBinding{Prompt: "test", CWD: wiki},
+		Coding:  RoleBinding{Prompt: "test", CWD: wiki},
+		Binary:  bin,
+		TickerCh: tickCh,
+		TimerCh:  timerCh,
+	}
+	cyc, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go func() { _ = cyc.Run(ctx) }()
+
+	// First tick: Idle -> WikingRun. spawnWiking runs the fake.
+	tickCh <- time.Now()
+
+	// Wait for the wiking_spawned event with a non-zero PID.
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case ev := <-cyc.Events:
+			if ev.Type == "wiking_spawned" {
+				if ev.PID == nil || *ev.PID == 0 {
+					t.Fatalf("wiking_spawned missing PID: %+v", ev)
+				}
+				return // success
+			}
+		case <-deadline:
+			t.Fatal("no wiking_spawned event")
+		}
+	}
+}
+
+// spawnWiking error path: when dispatch.Spawn returns an error
+// (e.g., empty Args directory), the cycle emits an error event
+// instead of crashing.
+//
+// In v1 this happens mostly when Binary!='' but Filesystem lookup
+// fails. We exercise it by feeding a non-existent CWD; Start()
+// on the spawn would fail, but the cycle catches it via the cmd
+// lifecycle. To keep this test hermetic, we just verify the
+// cycle library's no-binary fallback by configuring a non-existent
+// binary and confirming the cycle's behavior.
+func TestCycle_SpawnFailureEmitsError(t *testing.T) {
+	wiki := t.TempDir()
+	awp := t.TempDir()
+
+	tickCh := make(chan time.Time, 1)
+	timerCh := make(chan time.Time, 1)
+	cfg := Config{
+		WikiDir: wiki, RunID: "err", AWPHome: awp,
+		Threshold: 90, MaxNoProgress: 100,
+		IdleInterval:   100 * time.Millisecond,
+		WikingInterval: 100 * time.Millisecond,
+		CodingInterval: 100 * time.Millisecond,
+		WikingTimeout:  100 * time.Millisecond,
+		CodingTimeout:  100 * time.Millisecond,
+		Wiking:  RoleBinding{Prompt: "test", CWD: wiki},
+		Coding:  RoleBinding{Prompt: "test", CWD: wiki},
+		Binary:  "/nonexistent/binary/path",
+		TickerCh: tickCh,
+		TimerCh:  timerCh,
+	}
+	cyc, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go func() { _ = cyc.Run(ctx) }()
+
+	tickCh <- time.Now() // Idle -> WikingRun (spawn fails, emits error)
+
+	// The cycle should emit an error event for the spawn failure.
+	deadline := time.After(500 * time.Millisecond)
+	for {
+		select {
+		case ev := <-cyc.Events:
+			if ev.Type == "error" && (ev.Kind == "wiking_spawn_failed" || ev.Kind == "wiking_start_failed") {
+				return
+			}
+		case <-deadline:
+			t.Fatal("no error event from failed spawn")
+		}
+	}
+}
+
 // Run-level safety: Done fires exactly once with ErrCancelled on cancel.
 func TestCycle_DoneFiresExactlyOnce(t *testing.T) {
 	cyc, _ := newCycleForTest(t)
@@ -393,4 +694,19 @@ func c_roundNForTest(c *Cycle) int {
 		return 1
 	}
 	return n + 1
+}
+
+// writeFakeCycleBin writes a fake executable shell script to a
+// per-test temp dir. Mirrors the helper in dispatch_test.go but
+// lives here so cycle tests don't depend on dispatch_test.go
+// symbols (each test file is independent).
+func writeFakeCycleBin(t *testing.T, name, body string) string {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, name)
+	script := "#!/bin/sh\n" + body
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake bin: %v", err)
+	}
+	return path
 }
