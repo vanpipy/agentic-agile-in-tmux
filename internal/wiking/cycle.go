@@ -256,6 +256,9 @@ func (c *Cycle) Run(ctx context.Context) (runErr error) {
 		if c.log != nil {
 			_ = c.log.Close()
 		}
+		// Close Events so consumer goroutines iterating on it exit.
+		// Done signals the terminal result to whoever reads it.
+		close(c.Events)
 		c.Done <- runErr
 	}()
 
