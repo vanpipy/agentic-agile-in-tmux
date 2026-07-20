@@ -575,21 +575,24 @@ func (c *Cycle) spawnCoding() {
 
 // wikingSpawnArgs builds the argv for wiking.
 //
-// NOTE: pi's exact CLI flags for one-shot prompt + cwd are out of
-// scope here. We pass --mode rpc (consistent with awp's other pi
-// spawning). Production will fill in the exact flags once pi's CLI
-// is finalized; for v1 this is a stub.
+// Pinned format (v1):
+//   --mode rpc        consistent with awp's other pi usage
+//   --role wiking     role discriminator (test + audit friendly)
+//   --prompt <text>   role-bound prompt
+//
+// Production will revisit once pi's exact one-shot CLI surface
+// is finalized. For testing, --role lets fakes dispatch on argv.
 func (c *Cycle) wikingSpawnArgs() []string {
-	out := []string{"--mode", "rpc"}
+	out := []string{"--mode", "rpc", "--role", "wiking"}
 	if c.cfg.Wiking.Prompt != "" {
 		out = append(out, "--prompt", c.cfg.Wiking.Prompt)
 	}
 	return out
 }
 
-// codingSpawnArgs builds the argv for coding.
+// codingSpawnArgs builds the argv for coding. See wikingSpawnArgs.
 func (c *Cycle) codingSpawnArgs() []string {
-	out := []string{"--mode", "rpc"}
+	out := []string{"--mode", "rpc", "--role", "coding"}
 	if c.cfg.Coding.Prompt != "" {
 		out = append(out, "--prompt", c.cfg.Coding.Prompt)
 	}
