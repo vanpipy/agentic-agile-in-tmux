@@ -126,21 +126,20 @@ func TestCycle_OneFullRound(t *testing.T) {
 	runDone := make(chan error, 1)
 	go func() { runDone <- cyc.Run(ctx) }()
 
-	// Drain events into a list while Run is active; exit when Run
-	// returns. (Events channel isn't closed by the cycle; we exit
-	// the drain goroutine via the runDone signal.)
+	// Drain events into a list while Run is active; the cycle closes
+	// cyc.Events in its Run defer (commit 8a9081e), so the range loop
+	// exits naturally when the cycle terminates. The earlier
+	// select-with-<-runDone pattern raced with the test goroutine on
+	// the cap-1 runDone channel and could deadlock on the loser side
+	// (caught as a 30s test timeout — same shape as the 22-hour
+	// shell-arg bug fixed earlier in this commit).
 	collected := make(chan []wiking.Event, 1)
 	go func() {
 		var evs []wiking.Event
-		for {
-			select {
-			case ev := <-cyc.Events:
-				evs = append(evs, ev)
-			case <-runDone:
-				collected <- evs
-				return
-			}
+		for ev := range cyc.Events {
+			evs = append(evs, ev)
 		}
+		collected <- evs
 	}()
 
 	select {
