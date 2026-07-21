@@ -517,6 +517,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(
 			m.pollAgentStatusesAsync(),
 			m.pollTurnDonesAsync(),
+			m.pollCycleDoneAsync(),
 			tickAgentStatus(5 * time.Second),
 		)
 
@@ -538,6 +539,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// chip stops showing the completed stem. Idempotent; safe
 		// if no cycle was active (degenerate case).
 		m.handleCycleDoneMsg(msg)
+
+	case cycleDonePollMsg:
+		// No fire on cycleDone this tick; the tick itself is the
+		// signal that re-arms the next poll. No-op in Update.
 
 	case spinner.TickMsg:
 		var cmd tea.Cmd
@@ -3438,6 +3443,14 @@ type cycleDoneMsg struct {
 	err  error
 }
 
+// cycleDonePollMsg is the no-fire sentinel returned by
+// pollCycleDoneAsync when m.cycleDone has no value ready. Update
+// matches on it and treats it as a no-op (the tick is what matters:
+// the poll re-arms itself). Without this sentinel, the type switch
+// in Update would conflate "no fire" with "fire" and prematurely
+// clear the cycle slot every 5s.
+type cycleDonePollMsg struct{}
+
 // startCycle creates a *wiking.Cycle for the given article stem,
 // stores it on the parent Model per 18.9, transitions to ModeCycle,
 // and returns a tea.Cmd that drives cyc.Run in a goroutine.
@@ -3552,4 +3565,36 @@ func (m *Model) handleCycleDoneMsg(msg cycleDoneMsg) {
 	m.cycleDone = nil
 	m.cycleStem = ""
 	m.cycleStart = time.Time{}
+}
+
+// pollCycleDoneAsync — 18.9 background watcher. Mirrors
+// pollTurnDonesAsync: returns a Cmd that, when run, checks
+// m.cycleDone non-blockingly. If a value is ready, emits
+// cycleDoneMsg (which Update dispatches to handleCycleDoneMsg).
+// If no value is ready, emits cycleDonePollMsg (Update ignores).
+//
+// Wired into the agentStatusMsg tick (5s cadence) so the cleanup
+// happens within at most 5s of cyc.Run returning. The 5s bound
+// is acceptable because the cycleDone channel is the terminal
+// signal: there's no user-visible urgency in the cleanup beyond
+// "the chip should disappear and a new 'c' should work".
+//
+// Why non-blocking: pollCycleDoneAsync is called from the
+// agentStatusMsg tick. Blocking here would freeze the tick chain
+// — Update would never re-arm tickAgentStatus, and the entire
+// status pipeline (other panes' status checks) would stall. The
+// non-blocking pattern matches pollTurnDonesAsync.
+func (m *Model) pollCycleDoneAsync() tea.Cmd {
+	return func() tea.Msg {
+		defer observability.RecoverPanic("pollCycleDone")
+		if m.cycleDone == nil {
+			return cycleDonePollMsg{}
+		}
+		select {
+		case err := <-m.cycleDone:
+			return cycleDoneMsg{stem: m.cycleStem, err: err}
+		default:
+			return cycleDonePollMsg{}
+		}
+	}
 }

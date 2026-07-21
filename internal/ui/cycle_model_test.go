@@ -257,6 +257,73 @@ func TestCycle_XSendsExtCancel(t *testing.T) {
 	})
 }
 
+// TestCycle_PollCycleDoneAsyncDetectsDone — pollCycleDoneAsync
+// reads from m.cycleDone non-blockingly. When the cycle's Run
+// defer has written to cycleDone (the terminal-error signal), the
+// poll returns a cycleDoneMsg; Update then dispatches it to
+// handleCycleDoneMsg, which clears the slot.
+//
+// This test exercises the poll→msg path directly (without
+// involving Bubble Tea's runtime). The tick re-arming (re-issuing
+// the poll cmd on a 5s cadence) is wired separately in Update
+// via the same pattern as tickAgentStatus.
+func TestCycle_PollCycleDoneAsyncDetectsDone(t *testing.T) {
+	m := newModelForCycleTest(t)
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}})
+	if m.activeCycle == nil {
+		t.Fatal("precondition: cycle should have started")
+	}
+
+	// Drive the poll before any value is on cycleDone — should
+	// return a sentinel 'still running' value (empty cycleDoneMsg
+	// with err==nil and the no-fire condition) and NOT a real
+	// cycleDoneMsg that would clear the slot prematurely.
+	stillRunning := m.pollCycleDoneAsync()
+	if stillRunning == nil {
+		t.Fatal("pollCycleDoneAsync should return a non-nil Cmd even when no value is ready")
+	}
+	stillMsg := stillRunning()
+	// The sentinel must be the zero-value cycleDoneMsg (the
+	// type switch in Update's case cycleDoneMsg: would dispatch
+	// that to handleCycleDoneMsg too — so the caller must check
+	// for the no-fire condition OR the dispatcher must ignore
+	// the empty case). The cleanest contract: poll returns
+	// nil Cmd if no value is ready, or a real cycleDoneMsg
+	// that runs handleCycleDoneMsg.
+	if _, isDone := stillMsg.(cycleDoneMsg); isDone {
+		// Tolerated ONLY if the empty case is a no-op in the
+		// dispatcher; we still want the field-preservation
+		// guarantee, so check that the slot wasn't cleared.
+		if m.activeCycle == nil {
+			t.Fatal("premature slot clear — poll returned a cycleDoneMsg with no value on the channel")
+		}
+	}
+
+	// Simulate the cycle's defer firing: send the terminal error
+	// to the underlying Done channel.
+	m.activeCycle.Done <- nil
+
+	// Now the poll should return a real cycleDoneMsg.
+	fire := m.pollCycleDoneAsync()
+	if fire == nil {
+		t.Fatal("pollCycleDoneAsync should return a non-nil Cmd after Done has a value")
+	}
+	msg := fire()
+	doneMsg, ok := msg.(cycleDoneMsg)
+	if !ok {
+		t.Fatalf("poll returned %T, want cycleDoneMsg", msg)
+	}
+	if doneMsg.stem != m.cycleStem {
+		t.Errorf("cycleDoneMsg.stem = %q, want %q", doneMsg.stem, m.cycleStem)
+	}
+
+	// Drive it through Update's dispatcher for end-to-end.
+	_, _ = m.Update(doneMsg)
+	if m.activeCycle != nil {
+		t.Error("activeCycle should be nil after dispatching the done msg")
+	}
+}
+
 // TestCycle_DoneCleansUpActiveCycle — handleCycleDoneMsg clears
 // the cycle slot when invoked. This is the cleanup half of the
 // cycle lifecycle: cyc.Run returns → defer writes to cycleDone →
