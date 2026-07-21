@@ -187,13 +187,15 @@ type Model struct {
 	// lifetime. cyclepane (P6.2) is a viewer; this slot owns the
 	// state. Channels are wired in startCycle from the freshly-built
 	// *Cycle's Events/Ext/Done. cycleStem is the human-readable name
-	// shown in the header chip ("cycle: <stem>"). All fields are
-	// nil/zero when no cycle is active.
+	// shown in the header chip ("cycle: <stem>"). cyclePane is the
+	// viewer sub-Model rendered when m.mode == ModeCycle. All
+	// fields are nil/zero when no cycle is active.
 	activeCycle *wiking.Cycle
 	cycleEvents <-chan wiking.Event
 	cycleExt    chan<- wiking.ExtMsg
 	cycleDone   <-chan error
 	cycleStem   string
+	cyclePane   *CyclePane
 }
 
 // NewModel constructs the kanban model. awp only supports pi,
@@ -544,10 +546,20 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// signal that re-arms the next poll. No-op in Update.
 
 	case cycleEventMsg:
-		// 18.9: drained one event from m.cycleEvents. Route to
-		// the notification toast so the user sees cycle progress
-		// from any mode. P6.3 will suppress the toast when
-		// ModeCycle is focused (cyclepane renders the event).
+		// 18.9: drained one event from m.cycleEvents. The
+		// mode-aware split is the load-bearing part of the
+		// cyclepane integration: when ModeCycle is focused,
+		// the cyclepane renders the event (and we suppress
+		// the toast so the user doesn't see it twice). When
+		// not focused, the toast surfaces the event so cycle
+		// progress is visible from any mode.
+		if m.mode == ModeCycle && m.cyclePane != nil {
+			newPane, cmd := m.cyclePane.Update(msg)
+			if cp, ok := newPane.(*CyclePane); ok {
+				m.cyclePane = cp
+			}
+			return m, cmd
+		}
 		m.handleCycleEventMsg(msg)
 
 	case spinner.TickMsg:
@@ -3594,6 +3606,11 @@ func (m *Model) startCycle(stem string) tea.Cmd {
 	m.cycleExt = cyc.Ext
 	m.cycleDone = cyc.Done
 	m.cycleStem = stem
+	// P6.3 wiring: create the cyclepane viewer. Viewport size
+	// uses the parent's current dimensions; the pane re-sizes
+	// on WindowSizeMsg via the parent (the cyclepane doesn't
+	// listen for WindowSizeMsg on its own).
+	m.cyclePane = NewCyclePane(stem, m.width, m.height)
 	m.mode = ModeCycle
 
 	return func() tea.Msg {
@@ -3607,16 +3624,22 @@ func (m *Model) startCycle(stem string) tea.Cmd {
 // handleCycleMode dispatches keys when the cyclepane is focused
 // (ModeCycle). The 18.9 invariant is that the cycle is process-
 // lifetime, so leaving this mode via esc (handled globally in
-// handleKey) does NOT cancel the cycle — it just shifts focus back
-// to the kanban. cyclepane-specific keys (j/k scroll, Enter open
-// in $EDITOR, e inline-read) land here in P6.2/P6.3.
+// handleKey) does NOT cancel the cycle — it just shifts focus
+// back to the kanban.
 //
-// v1 pass-through: the global esc handler in handleKey already
-// transitions ModeCycle → ModeNormal, and the cycle-control
-// hotkeys (x/s/f) are mode-agnostic and handled in handleKey.
-// This dispatcher is currently a no-op kept as the future home
-// for cyclepane-only keys.
+// P6.3 wiring: forwards KeyMsg to m.cyclePane for j/k scroll.
+// The cyclepane is a sub-`tea.Model`; its Update returns the
+// new pane state, which we store back on m.cyclePane. We don't
+// call Init() on the pane (the parent owns lifecycle; the
+// pane has no async work to start).
 func (m *Model) handleCycleMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.cyclePane != nil {
+		newPane, cmd := m.cyclePane.Update(msg)
+		if cp, ok := newPane.(*CyclePane); ok {
+			m.cyclePane = cp
+		}
+		return m, cmd
+	}
 	return m, nil
 }
 
@@ -3631,6 +3654,7 @@ func (m *Model) handleCycleDoneMsg(msg cycleDoneMsg) {
 	m.cycleExt = nil
 	m.cycleDone = nil
 	m.cycleStem = ""
+	m.cyclePane = nil
 }
 
 // pollCycleDoneAsync — 18.9 background watcher. Mirrors

@@ -51,6 +51,26 @@ func (m *Model) View() (result string) {
 
 	var b strings.Builder
 
+	// 18.9 / P6.3: when ModeCycle is focused, render the
+	// cyclepane as the main view (with the kanban header
+	// still on top, since the header chip is the user's
+	// "you're in a cycle" indicator regardless of focus).
+	// The cyclepane owns the body; we pad to fill the
+	// viewport so the status bar lands cleanly at the
+	// bottom.
+	if m.mode == ModeCycle && m.cyclePane != nil {
+		b.WriteString(m.renderHeader())
+		b.WriteString("\n")
+		paneView := m.cyclePane.View()
+		paneStyle := lipgloss.NewStyle().
+			Width(m.width).
+			Height(m.height - m.headerHeight() - 3) // header + blank + status
+		b.WriteString(paneStyle.Render(paneView))
+		b.WriteString("\n")
+		b.WriteString(m.renderStatusBar())
+		return b.String()
+	}
+
 	b.WriteString(m.renderHeader())
 	b.WriteString("\n")
 

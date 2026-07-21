@@ -407,14 +407,20 @@ func TestCycle_FHotkeyShowsConfirmAndYieldsExtForceScore(t *testing.T) {
 // emits a cycleEventMsg; Update's handler (handleCycleEventMsg)
 // routes the event into the existing notification toast so the
 // user sees cycle progress from any mode (18.9 "其它时候由父
-// drain 出 toast"). P6.3 will add a mode-aware variant that
-// suppresses the toast when ModeCycle is focused (the cyclepane
-// renders the event there).
+// drain 出 toast"). P6.3 split: when ModeCycle is focused, the
+// event routes to the cyclepane instead — this test exercises
+// the unfocused path by leaving ModeCycle first.
 func TestCycle_PollEventsDrainsToToast(t *testing.T) {
 	m := newModelForCycleTest(t)
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}})
 	if m.activeCycle == nil {
 		t.Fatal("precondition: cycle should have started")
+	}
+	// P6.3: leave ModeCycle so events route to the toast
+	// instead of the cyclepane.
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if m.mode != ModeNormal {
+		t.Fatalf("after esc: mode = %v, want ModeNormal", m.mode)
 	}
 
 	// Push a known event onto the cycle's Events channel.
@@ -463,6 +469,201 @@ func TestCycle_PollEventsDrainsToToast(t *testing.T) {
 			}
 		}
 	})
+}
+
+// TestCycle_CPaneCreatedOnCAndReceivesEvents — P6.3 wiring. When
+// the user presses 'c' to start a cycle, the parent Model
+// instantiates a *CyclePane and stores it on m.cyclePane.
+// Subsequent cycleEventMsg dispatches (from pollCycleEventsAsync)
+// route to the cyclepane's Update (appending to its buffer) when
+// in ModeCycle, NOT to the toast.
+//
+// The mode-aware dispatch is the load-bearing part of 18.9:
+// "其它时候由父 drain 出 toast" — when the user is NOT focused on
+// the cyclepane, events still go to the toast; when focused
+// (ModeCycle), they go to the cyclepane. Without this split,
+// the user would see every event twice (toast + cyclepane) when
+// focused on the pane.
+func TestCycle_CPaneCreatedOnCAndReceivesEvents(t *testing.T) {
+	m := newModelForCycleTest(t)
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}})
+	if m.activeCycle == nil {
+		t.Fatal("precondition: cycle should have started")
+	}
+	if m.cyclePane == nil {
+		t.Fatal("cyclePane should be non-nil after pressing 'c' (P6.3 wiring)")
+	}
+	if m.cyclePane.stem != m.cycleStem {
+		t.Errorf("cyclePane.stem = %q, want %q", m.cyclePane.stem, m.cycleStem)
+	}
+
+	// Push a known event onto the cycle's Events channel.
+	round1 := 1
+	wantEv := wiking.Event{Type: "round_started", Round: &round1}
+	m.activeCycle.Events <- wantEv
+
+	// Dispatch through Update — should route to the cyclepane
+	// (mode is ModeCycle), not to the toast.
+	before := m.notification
+	_, _ = m.Update(cycleEventMsg{ev: wantEv})
+
+	// Toast should NOT have been updated (cyclepane is focused).
+	if m.notification != before {
+		t.Errorf("toast was updated while ModeCycle is focused: %q (was %q)", m.notification, before)
+	}
+	// Cyclepane buffer should have the event.
+	if got := len(m.cyclePane.events); got != 1 {
+		t.Errorf("cyclePane.events len = %d, want 1", got)
+	}
+	if m.cyclePane.events[0].Type != wantEv.Type {
+		t.Errorf("cyclePane.events[0].Type = %q, want %q", m.cyclePane.events[0].Type, wantEv.Type)
+	}
+
+	// Now press esc — leave ModeCycle. Push another event, dispatch.
+	// It SHOULD go to the toast (focused-away case, 18.9).
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if m.mode != ModeNormal {
+		t.Fatalf("after esc: mode = %v, want ModeNormal", m.mode)
+	}
+	score := 92
+	ev2 := wiking.Event{Type: "score_parsed", Score: &score}
+	m.activeCycle.Events <- ev2
+	beforeToast := m.notification
+	_, _ = m.Update(cycleEventMsg{ev: ev2})
+	if m.notification == beforeToast {
+		t.Error("toast should be updated when NOT focused (ModeNormal); was unchanged")
+	}
+	// Cyclepane buffer should NOT have the second event (we left ModeCycle).
+	if got := len(m.cyclePane.events); got != 1 {
+		t.Errorf("cyclePane.events len = %d after leaving ModeCycle, want 1 (unchanged)", got)
+	}
+
+	t.Cleanup(func() {
+		if m.activeCycle != nil {
+			select {
+			case m.cycleExt <- wiking.ExtMsg{Kind: wiking.ExtCancel}:
+			case <-time.After(100 * time.Millisecond):
+			}
+		}
+	})
+}
+
+// TestCycle_ViewRendersCyclePaneWhenModeCycle — when m.mode is
+// ModeCycle, View() includes the cyclepane's render (header
+// + event list + footer), not the kanban. The stem should
+// appear in the rendered output.
+func TestCycle_ViewRendersCyclePaneWhenModeCycle(t *testing.T) {
+	m := newModelForCycleTest(t)
+	m.width = 120
+	m.height = 40
+	m.refreshColumnTickets()
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}})
+
+	// The cycle's stem is "default" (no ticket selected) or the
+	// active ticket's title. The pane's View starts with
+	// "cycle: <stem>" so the user sees the identifier.
+	view := m.View()
+	if !strings.Contains(view, m.cycleStem) {
+		t.Errorf("View should contain stem %q; got first 3 lines: %.300q",
+			m.cycleStem, firstNLines(view, 3))
+	}
+	// The cyclepane's empty-state hint is "waiting for first
+	// event" or similar — should be present.
+	low := strings.ToLower(view)
+	if !strings.Contains(low, "waiting") && !strings.Contains(low, "no events") {
+		t.Errorf("View should contain empty-pane hint; got: %.300q", firstNLines(view, 5))
+	}
+
+	t.Cleanup(func() {
+		if m.activeCycle != nil {
+			select {
+			case m.cycleExt <- wiking.ExtMsg{Kind: wiking.ExtCancel}:
+			case <-time.After(100 * time.Millisecond):
+			}
+		}
+	})
+}
+
+// TestCycle_CPaneClearedOnDone — handleCycleDoneMsg clears the
+// cyclepane along with the rest of the cycle slot. After
+// dispatch, m.cyclePane is nil. A subsequent 'c' press creates
+// a fresh cyclepane (not reuses the dead one).
+func TestCycle_CPaneClearedOnDone(t *testing.T) {
+	m := newModelForCycleTest(t)
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}})
+	if m.cyclePane == nil {
+		t.Fatal("precondition: cyclePane should be set after 'c'")
+	}
+
+	// Simulate cycle done.
+	m.activeCycle.Done <- nil
+	_, _ = m.Update(cycleDoneMsg{stem: m.cycleStem, err: nil})
+
+	if m.cyclePane != nil {
+		t.Error("cyclePane should be nil after handleCycleDoneMsg")
+	}
+}
+
+// TestCycle_CPaneScrollingViaJ — P6.3 wiring. When ModeCycle is
+// focused, j/k keys route to the cyclepane (not to spawn or
+// other normal-mode handlers). This pins the integration: the
+// global handleKey dispatches to handleCycleMode, which
+// forwards to m.cyclePane.Update.
+func TestCycle_CPaneScrollingViaJ(t *testing.T) {
+	m := newModelForCycleTest(t)
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}})
+
+	// Push 5 events to overflow the default viewport.
+	for i := 1; i <= 5; i++ {
+		score := i
+		m.activeCycle.Events <- wiking.Event{Type: "score_parsed", Score: &score}
+	}
+	// Drain via dispatch (in ModeCycle → cyclepane).
+	for i := 0; i < 5; i++ {
+		_, _ = m.Update(<-captureEventChan(m))
+	}
+	if got := len(m.cyclePane.events); got != 5 {
+		t.Fatalf("setup: cyclePane events = %d, want 5", got)
+	}
+
+	// Default height is 20, so 5 events fit without scroll.
+	// Press j — should still be 0 (clamped to max).
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	if m.cyclePane.scroll != 0 {
+		t.Errorf("scroll = %d with 5 events / height 20, want 0 (no overflow)", m.cyclePane.scroll)
+	}
+
+	// Resize to height=3 to force overflow.
+	m.cyclePane.height = 3
+	m.cyclePane.clampScroll()
+	// scroll should still be 0 (no overflow possible with 5 events and height 3 → maxScroll = 2)
+	// But the user pressing j moves scroll to 1.
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	if m.cyclePane.scroll != 1 {
+		t.Errorf("scroll after j (with height=3, events=5) = %d, want 1", m.cyclePane.scroll)
+	}
+
+	t.Cleanup(func() {
+		if m.activeCycle != nil {
+			select {
+			case m.cycleExt <- wiking.ExtMsg{Kind: wiking.ExtCancel}:
+			case <-time.After(100 * time.Millisecond):
+			}
+		}
+	})
+}
+
+// captureEventChan is a small test helper: drains one event
+// from m.cycleEvents and wraps it as a cycleEventMsg. Tests
+// use this to simulate "tick fired, here's the next event"
+// without writing a full poll.
+func captureEventChan(m *Model) <-chan tea.Msg {
+	out := make(chan tea.Msg, 1)
+	go func() {
+		ev := <-m.activeCycle.Events
+		out <- cycleEventMsg{ev: ev}
+	}()
+	return out
 }
 
 // TestCycle_PollCycleDoneAsyncRaceFree — concurrency regression
