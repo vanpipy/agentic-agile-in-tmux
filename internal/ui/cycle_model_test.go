@@ -302,6 +302,104 @@ func TestCycle_SSendsExtSkip(t *testing.T) {
 	})
 }
 
+// TestCycle_FHotkeyShowsConfirmAndYieldsExtForceScore — pressing
+// 'f' with an active cycle opens the confirm dialog (per 18.12's
+// "二次确认" / "secondary confirmation" requirement) instead of
+// sending the force command immediately. Confirming with 'y' then
+// sends wiking.ExtMsg{Kind: ExtForceScore, ForceScore: <threshold>}
+// via m.cycleExt. Cancelling with 'n' or 'esc' closes the dialog
+// without sending.
+//
+// Implementation note: the cycle library has no ExtForceAccept
+// kind. Force-accept is implemented by sending ExtForceScore
+// with a score >= the configured threshold; the cycle's
+// handleExt sets c.lastScore = msg.ForceScore and transitions
+// to PhaseDecide, where the existing score check
+// (lastScore >= threshold → Sync) routes the cycle to the
+// sync-and-accept path. This is the same path a legitimate
+// high score would take.
+//
+// The two-step flow keeps a misclick from bypassing the score
+// check: a user with a cycle on round 3 scoring 60/90 has to
+// explicitly opt into force-accepting the lower-scored draft.
+func TestCycle_FHotkeyShowsConfirmAndYieldsExtForceScore(t *testing.T) {
+	m := newModelForCycleTest(t)
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}})
+	if m.activeCycle == nil {
+		t.Fatal("precondition: cycle should have started")
+	}
+
+	// Drain any prior Ext traffic.
+	select {
+	case <-m.activeCycle.Ext:
+	default:
+	}
+
+	// Press 'f' — should open the confirm dialog, NOT send yet.
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'f'}})
+	if !m.showConfirm {
+		t.Fatal("'f' should open the confirm dialog; showConfirm is false")
+	}
+	if m.confirmFn == nil {
+		t.Fatal("confirmFn should be set so 'y' can dispatch ExtForceScore")
+	}
+
+	// At this point cycleExt must still be empty (the confirm
+	// hasn't been answered yet).
+	select {
+	case msg := <-m.activeCycle.Ext:
+		t.Fatalf("ExtMsg leaked before confirm: %+v", msg)
+	default:
+	}
+
+	// Confirm with 'y' — should run the confirmFn which sends
+	// ExtForceScore. Running the cmd directly here is what 'y'
+	// would do via handleConfirm.
+	cmd := m.confirmFn()
+	if cmd != nil {
+		_ = cmd()
+	}
+	// handleConfirm also clears showConfirm.
+	m.showConfirm = false
+
+	select {
+	case msg := <-m.activeCycle.Ext:
+		if msg.Kind != wiking.ExtForceScore {
+			t.Errorf("ExtMsg.Kind = %v, want ExtForceScore", msg.Kind)
+		}
+		if msg.ForceScore < m.config.Cycle.Threshold {
+			t.Errorf("ForceScore = %d, want >= threshold %d", msg.ForceScore, m.config.Cycle.Threshold)
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatal("no ExtForceScore received on cycleExt within 1s after confirm")
+	}
+
+	// Test cancel path too: re-press 'f' to open the dialog
+	// again, then 'esc' to cancel.
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'f'}})
+	if !m.showConfirm {
+		t.Fatal("'f' should re-open the confirm dialog")
+	}
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if m.showConfirm {
+		t.Error("'esc' should close the confirm dialog (no force-accept sent)")
+	}
+	select {
+	case msg := <-m.activeCycle.Ext:
+		t.Errorf("ExtMsg leaked after cancel: %+v", msg)
+	default:
+	}
+
+	t.Cleanup(func() {
+		if m.activeCycle != nil {
+			select {
+			case m.cycleExt <- wiking.ExtMsg{Kind: wiking.ExtCancel}:
+			case <-time.After(100 * time.Millisecond):
+			}
+		}
+	})
+}
+
 // TestCycle_PollEventsDrainsToToast — pollCycleEventsAsync reads
 // from m.cycleEvents non-blockingly. When an event is ready, it
 // emits a cycleEventMsg; Update's handler (handleCycleEventMsg)

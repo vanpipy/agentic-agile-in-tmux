@@ -629,6 +629,41 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+	case "f":
+		// 18.12: 'f' force-accepts the current cycle, but ONLY
+		// after a confirm dialog (二次确认). Implementation uses
+		// the existing showConfirm/confirmFn pattern (same as
+		// delete-project).
+		//
+		// Force-accept is sent as ExtForceScore{ForceScore: <threshold>}
+		// because the cycle library has no dedicated force-accept
+		// ExtKind. The cycle's handleExt sets c.lastScore to the
+		// forced value and transitions to PhaseDecide, where the
+		// existing score check (lastScore >= threshold → Sync)
+		// routes the cycle to the accept path. Using exactly
+		// the threshold keeps the semantics clean: we're not
+		// lying about a higher score, just bypassing the gate.
+		//
+		// 'f' is mode-agnostic when a cycle is active. The
+		// disambiguator is the cycle check — without a cycle,
+		// 'f' falls through to whatever the mode-specific
+		// handler wants to do (nothing in handleNormalMode's
+		// current set, so the key is silently dropped).
+		if m.activeCycle != nil {
+			m.showConfirm = true
+			m.confirmMsg = "Force-accept the current cycle? (y/n)"
+			m.confirmFn = func() tea.Cmd {
+				select {
+				case m.cycleExt <- wiking.ExtMsg{
+					Kind:       wiking.ExtForceScore,
+					ForceScore: m.config.Cycle.Threshold,
+				}:
+				default:
+				}
+				return nil
+			}
+			return m, nil
+		}
 	case "?":
 		if m.mode == ModeNormal || m.mode == ModeHelp {
 			m.showHelp = !m.showHelp
