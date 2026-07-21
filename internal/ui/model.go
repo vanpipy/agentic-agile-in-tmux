@@ -518,6 +518,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.pollAgentStatusesAsync(),
 			m.pollTurnDonesAsync(),
 			m.pollCycleDoneAsync(),
+			m.pollCycleEventsAsync(),
 			tickAgentStatus(5 * time.Second),
 		)
 
@@ -543,6 +544,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case cycleDonePollMsg:
 		// No fire on cycleDone this tick; the tick itself is the
 		// signal that re-arms the next poll. No-op in Update.
+
+	case cycleEventMsg:
+		// 18.9: drained one event from m.cycleEvents. Route to
+		// the notification toast so the user sees cycle progress
+		// from any mode. P6.3 will suppress the toast when
+		// ModeCycle is focused (cyclepane renders the event).
+		m.handleCycleEventMsg(msg)
 
 	case spinner.TickMsg:
 		var cmd tea.Cmd
@@ -602,6 +610,21 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.activeCycle != nil {
 			select {
 			case m.cycleExt <- wiking.ExtMsg{Kind: wiking.ExtCancel}:
+			default:
+			}
+			return m, nil
+		}
+	case "s":
+		// 18.12: 's' skips the current round (force-loop) when a
+		// cycle is active. Mode-agnostic like 'x'. The disambiguator
+		// vs handleNormalMode's spawn ('s' = spawn agent there) is
+		// the cycle-active check: with no cycle, 's' falls through
+		// to spawnAgent. With a cycle, the spawn branch never
+		// fires; the user pressed 's' for cycle control, not to
+		// spawn a new pi.
+		if m.activeCycle != nil {
+			select {
+			case m.cycleExt <- wiking.ExtMsg{Kind: wiking.ExtSkip}:
 			default:
 			}
 			return m, nil
@@ -3451,6 +3474,16 @@ type cycleDoneMsg struct {
 // clear the cycle slot every 5s.
 type cycleDonePollMsg struct{}
 
+// cycleEventMsg carries one wiking.Event that was drained from
+// m.cycleEvents by pollCycleEventsAsync. Update dispatches to
+// handleCycleEventMsg which routes the event to the notification
+// toast (per 18.9 "其它时候由父 drain 出 toast"). P6.3 will add a
+// mode-aware variant that suppresses the toast when ModeCycle is
+// focused (the cyclepane renders the event there).
+type cycleEventMsg struct {
+	ev wiking.Event
+}
+
 // startCycle creates a *wiking.Cycle for the given article stem,
 // stores it on the parent Model per 18.9, transitions to ModeCycle,
 // and returns a tea.Cmd that drives cyc.Run in a goroutine.
@@ -3597,4 +3630,104 @@ func (m *Model) pollCycleDoneAsync() tea.Cmd {
 			return cycleDonePollMsg{}
 		}
 	}
+}
+
+// pollCycleEventsAsync — 18.9 background drain. Returns a Cmd
+// that, when run, reads ONE event from m.cycleEvents
+// non-blockingly and emits cycleEventMsg. If no event is ready,
+// returns nil (Bubble Tea silently skips nil cmds, so the tick
+// still re-arms without producing a spurious event).
+//
+// Why drain only one event per poll: the cycle's Events channel
+// is cap-32, so a burst can pile up; draining one per tick
+// avoids flooding Update with a single huge batch and keeps the
+// toast queue from being monopolised by cycle events. The next
+// tick picks up the next event. This is the same single-event
+// pattern pollTurnDonesAsync uses (one cache update per cycle).
+//
+// Wired into the agentStatusMsg tick alongside pollCycleDoneAsync.
+// 5s cadence is acceptable for the toast because cycle events
+// are not time-critical UX — they're informational.
+func (m *Model) pollCycleEventsAsync() tea.Cmd {
+	return func() tea.Msg {
+		defer observability.RecoverPanic("pollCycleEvents")
+		if m.cycleEvents == nil {
+			return nil
+		}
+		select {
+		case ev := <-m.cycleEvents:
+			return cycleEventMsg{ev: ev}
+		default:
+			return nil
+		}
+	}
+}
+
+// handleCycleEventMsg routes a single drained cycle event to
+// the notification toast. The wording follows the 18.7 event
+// type catalog so users get a meaningful hint at what happened.
+//
+// P6.3 will add a ModeCycle check: when the cyclepane is focused,
+// suppress the toast (the cyclepane renders the event there).
+// For v1, every event goes to the toast regardless of focus.
+func (m *Model) handleCycleEventMsg(msg cycleEventMsg) {
+	ev := msg.ev
+	var summary string
+	switch ev.Type {
+	case "round_started":
+		summary = fmt.Sprintf("cycle: round %s started", intPtrStr(ev.Round))
+	case "wiking_spawned":
+		summary = "cycle: wiking agent started"
+	case "wiking_done":
+		summary = "cycle: wiking draft written"
+	case "coding_spawned":
+		summary = "cycle: coding reviewer started"
+	case "coding_done":
+		summary = "cycle: coding review written"
+	case "score_parsed":
+		if ev.Score != nil {
+			summary = fmt.Sprintf("cycle: score %d", *ev.Score)
+		} else {
+			summary = "cycle: score parsed"
+		}
+	case "score_above_threshold":
+		if ev.Score != nil {
+			summary = fmt.Sprintf("cycle: score %d (>= threshold, accepted)", *ev.Score)
+		} else {
+			summary = "cycle: score above threshold"
+		}
+	case "loop":
+		if ev.Score != nil {
+			summary = fmt.Sprintf("cycle: score %d < threshold, looping", *ev.Score)
+		} else {
+			summary = "cycle: looping"
+		}
+	case "synced":
+		summary = "cycle: synced article"
+	case "cycle_accepted":
+		summary = "cycle: accepted"
+	case "cycle_failed":
+		summary = "cycle: failed"
+	case "phase_timeout":
+		summary = "cycle: phase timeout"
+	case "no_progress":
+		summary = "cycle: no-progress exit"
+	case "error":
+		summary = "cycle: error"
+	case "terminated":
+		summary = "cycle: terminated"
+	default:
+		summary = "cycle: " + ev.Type
+	}
+	m.notify(summary)
+}
+
+// intPtrStr renders a *int as a short string for toasts. Returns
+// "?" for nil so the toast never reads "round  started" with a
+// weird gap.
+func intPtrStr(p *int) string {
+	if p == nil {
+		return "?"
+	}
+	return fmt.Sprintf("%d", *p)
 }

@@ -257,6 +257,114 @@ func TestCycle_XSendsExtCancel(t *testing.T) {
 	})
 }
 
+// TestCycle_SSendsExtSkip — pressing 's' with an active cycle
+// sends wiking.ExtMsg{Kind: ExtSkip} via m.cycleExt. Per 18.12,
+// 's' skips the current round (force-loop) and works in any mode
+// with an active cycle, same mode-agnostic dispatch as 'x'.
+//
+// 's' is NOT a global hotkey — handleNormalMode already uses it
+// for spawnAgent (line 654-655). The cycle check
+// (m.activeCycle != nil) is the disambiguator: when a cycle is
+// running, 's' goes to the cycle, not spawnAgent. Without a
+// cycle, 's' falls through to the existing spawn behavior.
+func TestCycle_SSendsExtSkip(t *testing.T) {
+	m := newModelForCycleTest(t)
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}})
+	if m.activeCycle == nil {
+		t.Fatal("precondition: cycle should have started")
+	}
+
+	// Drain any prior Ext traffic.
+	select {
+	case <-m.activeCycle.Ext:
+	default:
+	}
+
+	// Press 's' from ModeCycle.
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+
+	select {
+	case msg := <-m.activeCycle.Ext:
+		if msg.Kind != wiking.ExtSkip {
+			t.Errorf("ExtMsg.Kind = %v, want ExtSkip", msg.Kind)
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatal("no ExtSkip received on cycleExt within 1s")
+	}
+
+	t.Cleanup(func() {
+		if m.activeCycle != nil {
+			select {
+			case m.cycleExt <- wiking.ExtMsg{Kind: wiking.ExtCancel}:
+			case <-time.After(100 * time.Millisecond):
+			}
+		}
+	})
+}
+
+// TestCycle_PollEventsDrainsToToast — pollCycleEventsAsync reads
+// from m.cycleEvents non-blockingly. When an event is ready, it
+// emits a cycleEventMsg; Update's handler (handleCycleEventMsg)
+// routes the event into the existing notification toast so the
+// user sees cycle progress from any mode (18.9 "其它时候由父
+// drain 出 toast"). P6.3 will add a mode-aware variant that
+// suppresses the toast when ModeCycle is focused (the cyclepane
+// renders the event there).
+func TestCycle_PollEventsDrainsToToast(t *testing.T) {
+	m := newModelForCycleTest(t)
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}})
+	if m.activeCycle == nil {
+		t.Fatal("precondition: cycle should have started")
+	}
+
+	// Push a known event onto the cycle's Events channel.
+	round1 := 1
+	wantEv := wiking.Event{Type: "round_started", Round: &round1}
+	m.activeCycle.Events <- wantEv
+
+	// Drive the poll.
+	cmd := m.pollCycleEventsAsync()
+	if cmd == nil {
+		t.Fatal("pollCycleEventsAsync should return a non-nil Cmd")
+	}
+	msg := cmd()
+	evMsg, ok := msg.(cycleEventMsg)
+	if !ok {
+		t.Fatalf("poll returned %T, want cycleEventMsg", msg)
+	}
+	if evMsg.ev.Type != wantEv.Type {
+		t.Errorf("ev.Type = %q, want %q", evMsg.ev.Type, wantEv.Type)
+	}
+	if evMsg.ev.Round != wantEv.Round {
+		t.Errorf("ev.Round = %d, want %d", evMsg.ev.Round, wantEv.Round)
+	}
+
+	// Dispatch through Update; the handler should set the toast.
+	before := m.notification
+	_, _ = m.Update(evMsg)
+	if m.notification == "" {
+		t.Error("notification toast should be set after a cycle event")
+	}
+	if m.notification == before {
+		t.Error("notification toast unchanged after event (handler did not run)")
+	}
+	// Toast should mention the event type so the user has a
+	// hint at what happened.
+	if !strings.Contains(strings.ToLower(m.notification), "round") &&
+		!strings.Contains(strings.ToLower(m.notification), "cycle") {
+		t.Errorf("toast %q should mention the cycle or event context", m.notification)
+	}
+
+	t.Cleanup(func() {
+		if m.activeCycle != nil {
+			select {
+			case m.cycleExt <- wiking.ExtMsg{Kind: wiking.ExtCancel}:
+			case <-time.After(100 * time.Millisecond):
+			}
+		}
+	})
+}
+
 // TestCycle_PollCycleDoneAsyncDetectsDone — pollCycleDoneAsync
 // reads from m.cycleDone non-blockingly. When the cycle's Run
 // defer has written to cycleDone (the terminal-error signal), the
