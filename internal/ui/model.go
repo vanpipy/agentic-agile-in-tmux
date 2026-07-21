@@ -187,15 +187,13 @@ type Model struct {
 	// lifetime. cyclepane (P6.2) is a viewer; this slot owns the
 	// state. Channels are wired in startCycle from the freshly-built
 	// *Cycle's Events/Ext/Done. cycleStem is the human-readable name
-	// shown in the header chip ("cycle: <stem>"); cycleStart is when
-	// the cycle was started, used by the cyclepane to render elapsed
-	// time. Both nil/zero when no cycle is active.
+	// shown in the header chip ("cycle: <stem>"). All fields are
+	// nil/zero when no cycle is active.
 	activeCycle *wiking.Cycle
 	cycleEvents <-chan wiking.Event
 	cycleExt    chan<- wiking.ExtMsg
 	cycleDone   <-chan error
 	cycleStem   string
-	cycleStart  time.Time
 }
 
 // NewModel constructs the kanban model. awp only supports pi,
@@ -3596,7 +3594,6 @@ func (m *Model) startCycle(stem string) tea.Cmd {
 	m.cycleExt = cyc.Ext
 	m.cycleDone = cyc.Done
 	m.cycleStem = stem
-	m.cycleStart = time.Now()
 	m.mode = ModeCycle
 
 	return func() tea.Msg {
@@ -3612,12 +3609,14 @@ func (m *Model) startCycle(stem string) tea.Cmd {
 // lifetime, so leaving this mode via esc (handled globally in
 // handleKey) does NOT cancel the cycle — it just shifts focus back
 // to the kanban. cyclepane-specific keys (j/k scroll, Enter open
-// in $EDITOR, e inline-read, x/cancel, s/skip, f/force-accept)
-// land here in P6.2/P6.3.
+// in $EDITOR, e inline-read) land here in P6.2/P6.3.
+//
+// v1 pass-through: the global esc handler in handleKey already
+// transitions ModeCycle → ModeNormal, and the cycle-control
+// hotkeys (x/s/f) are mode-agnostic and handled in handleKey.
+// This dispatcher is currently a no-op kept as the future home
+// for cyclepane-only keys.
 func (m *Model) handleCycleMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	// v1 stub: pass through. The global esc handler in handleKey
-	// already transitions ModeCycle → ModeNormal. cyclepane key
-	// handling is P6.2.
 	return m, nil
 }
 
@@ -3632,7 +3631,6 @@ func (m *Model) handleCycleDoneMsg(msg cycleDoneMsg) {
 	m.cycleExt = nil
 	m.cycleDone = nil
 	m.cycleStem = ""
-	m.cycleStart = time.Time{}
 }
 
 // pollCycleDoneAsync — 18.9 background watcher. Mirrors
@@ -3652,15 +3650,27 @@ func (m *Model) handleCycleDoneMsg(msg cycleDoneMsg) {
 // — Update would never re-arm tickAgentStatus, and the entire
 // status pipeline (other panes' status checks) would stall. The
 // non-blocking pattern matches pollTurnDonesAsync.
+//
+// Concurrency note (load-bearing): the closure captures the
+// channel and stem by VALUE (done, stem) at Cmd-creation time,
+// not via the m receiver. If the closure read m.cycleDone and
+// m.cycleStem from the goroutine, it would race with the
+// handleCycleDoneMsg writer in Update's main goroutine, which
+// nils those fields. The race would not surface in unit tests
+// (which invoke the Cmd directly, no goroutine) but would
+// manifest in production under -race. Capturing the locals here
+// keeps the closure self-contained.
 func (m *Model) pollCycleDoneAsync() tea.Cmd {
+	if m.cycleDone == nil {
+		return func() tea.Msg { return cycleDonePollMsg{} }
+	}
+	done := m.cycleDone
+	stem := m.cycleStem
 	return func() tea.Msg {
 		defer observability.RecoverPanic("pollCycleDone")
-		if m.cycleDone == nil {
-			return cycleDonePollMsg{}
-		}
 		select {
-		case err := <-m.cycleDone:
-			return cycleDoneMsg{stem: m.cycleStem, err: err}
+		case err := <-done:
+			return cycleDoneMsg{stem: stem, err: err}
 		default:
 			return cycleDonePollMsg{}
 		}
@@ -3683,14 +3693,20 @@ func (m *Model) pollCycleDoneAsync() tea.Cmd {
 // Wired into the agentStatusMsg tick alongside pollCycleDoneAsync.
 // 5s cadence is acceptable for the toast because cycle events
 // are not time-critical UX — they're informational.
+//
+// Concurrency note: same local-capture pattern as
+// pollCycleDoneAsync. The closure captures the events channel
+// by value, not via m.cycleEvents, so the goroutine doesn't
+// race with handleCycleDoneMsg's field nilling.
 func (m *Model) pollCycleEventsAsync() tea.Cmd {
+	if m.cycleEvents == nil {
+		return func() tea.Msg { return nil }
+	}
+	events := m.cycleEvents
 	return func() tea.Msg {
 		defer observability.RecoverPanic("pollCycleEvents")
-		if m.cycleEvents == nil {
-			return nil
-		}
 		select {
-		case ev := <-m.cycleEvents:
+		case ev := <-events:
 			return cycleEventMsg{ev: ev}
 		default:
 			return nil
