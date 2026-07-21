@@ -15,6 +15,7 @@
 package ui
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -97,4 +98,121 @@ func TestCycle_CHotkeyStartsCycle(t *testing.T) {
 			}
 		}
 	})
+}
+
+// TestCycle_EscLeavesModeCycleWithoutKillingCycle — pressing esc
+// from ModeCycle returns to ModeNormal (the kanban) but keeps the
+// cycle running. This is the load-bearing 18.9 invariant: "the
+// cycle is not bound to mode lifetime" — a 30-min cycle cannot
+// require 30 min of ModeCycle focus.
+//
+// Pre-conditions: a cycle has been started (fields populated).
+// Action: send esc.
+// Post-conditions: mode == ModeNormal, activeCycle still non-nil,
+// channels still wired, cycleStem preserved.
+func TestCycle_EscLeavesModeCycleWithoutKillingCycle(t *testing.T) {
+	m := newModelForCycleTest(t)
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}})
+	if m.mode != ModeCycle {
+		t.Fatalf("precondition: mode = %v, want ModeCycle", m.mode)
+	}
+	originalCycle := m.activeCycle
+	originalStem := m.cycleStem
+
+	// Press esc.
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+
+	if m.mode != ModeNormal {
+		t.Errorf("mode after esc = %v, want ModeNormal", m.mode)
+	}
+	if m.activeCycle == nil {
+		t.Error("activeCycle should remain non-nil after esc (cycle keeps running)")
+	}
+	if m.activeCycle != originalCycle {
+		t.Error("activeCycle pointer changed — cycle was killed and replaced")
+	}
+	if m.cycleStem != originalStem {
+		t.Errorf("cycleStem = %q, want preserved %q", m.cycleStem, originalStem)
+	}
+	if m.cycleEvents == nil {
+		t.Error("cycleEvents channel should remain wired after esc")
+	}
+	if m.cycleDone == nil {
+		t.Error("cycleDone channel should remain wired after esc")
+	}
+
+	// Cleanup
+	t.Cleanup(func() {
+		if m.activeCycle != nil {
+			select {
+			case m.cycleExt <- wiking.ExtMsg{Kind: wiking.ExtCancel}:
+			case <-time.After(100 * time.Millisecond):
+			}
+		}
+	})
+}
+
+// TestCycle_ViewShowsCycleChipWhenActive — View() renders the cycle
+// chip in the header when activeCycle is set. The chip shows the
+// article stem (T2 Q4) so the user can tell which cycle is running
+// when not focused on the cyclepane.
+//
+// Implementation: render a known-width header, scan for the cycle
+// stem text. The exact chip format is not pinned here — only that
+// the stem appears in the header.
+func TestCycle_ViewShowsCycleChipWhenActive(t *testing.T) {
+	m := newModelForCycleTest(t)
+	m.width = 120
+	m.height = 40
+	m.refreshColumnTickets()
+
+	// Baseline: no cycle, view should not contain a "cycle" hint.
+	viewBaseline := m.View()
+	if strings.Contains(strings.ToLower(viewBaseline), "cycle:") {
+		t.Fatalf("baseline view should not contain a 'cycle:' chip; got: %.300q", viewBaseline)
+	}
+
+	// Start a cycle with a known stem.
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}})
+	if m.activeCycle == nil {
+		t.Fatal("precondition: cycle should have started")
+	}
+	if m.cycleStem == "" {
+		t.Fatal("precondition: cycleStem should be populated")
+	}
+
+	// Header should now mention the cycle.
+	viewActive := m.View()
+	if !strings.Contains(viewActive, m.cycleStem) {
+		t.Errorf("view with active cycle should contain stem %q in header; got header slice: %.300q",
+			m.cycleStem, firstNLines(viewActive, 3))
+	}
+	if !strings.Contains(strings.ToLower(viewActive), "cycle") {
+		t.Errorf("view with active cycle should contain the word 'cycle' in the chip; got header slice: %.300q",
+			firstNLines(viewActive, 3))
+	}
+
+	// Cleanup
+	t.Cleanup(func() {
+		if m.activeCycle != nil {
+			select {
+			case m.cycleExt <- wiking.ExtMsg{Kind: wiking.ExtCancel}:
+			case <-time.After(100 * time.Millisecond):
+			}
+		}
+	})
+}
+
+// firstNLines returns the first n lines of s, joined by '\n'. Used
+// for compact error messages so the test failure shows the header
+// row (where the chip lives) without dumping the full kanban view.
+func firstNLines(s string, n int) string {
+	out := []string{}
+	for i, line := range strings.Split(s, "\n") {
+		if i >= n {
+			break
+		}
+		out = append(out, line)
+	}
+	return strings.Join(out, "\n")
 }

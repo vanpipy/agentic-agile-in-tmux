@@ -115,6 +115,22 @@ func (m *Model) renderHeader() string {
 	help := helpStyle.Render("? help  q quit")
 
 	right := help
+	if m.activeCycle != nil {
+		// 18.9 cycle chip: shown in the header whenever a cycle
+		// is running, regardless of focus. Stem is the human-
+		// readable article name (T2 Q4 decision). The trailing
+		// arrow indicates 'jump to ModeCycle' per 18.12 hotkey;
+		// the jump itself is wired in P6.3. Background is the
+		// surface color so the chip reads as a distinct badge
+		// rather than blending into the header line.
+		chipStyle := lipgloss.NewStyle().
+			Foreground(m.colors.primary).
+			Background(m.colors.surface).
+			Bold(true).
+			Padding(0, 1)
+		chip := chipStyle.Render(fmt.Sprintf("▶ cycle: %s", m.cycleStem))
+		right = lipgloss.JoinHorizontal(lipgloss.Center, chip, "  ", help)
+	}
 
 	spacing := m.width - lipgloss.Width(left) - lipgloss.Width(right)
 	spacing = max(spacing, 0)

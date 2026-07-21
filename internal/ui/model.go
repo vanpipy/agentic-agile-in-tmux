@@ -620,6 +620,8 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleFilterMode(msg)
 	case ModeCreateProject:
 		return m.handleCreateProjectMode(msg)
+	case ModeCycle:
+		return m.handleCycleMode(msg)
 	}
 
 	return m, nil
@@ -3508,6 +3510,20 @@ func (m *Model) startCycle(stem string) tea.Cmd {
 		runErr := cyc.Run(ctx)
 		return cycleDoneMsg{stem: stem, err: runErr}
 	}
+}
+
+// handleCycleMode dispatches keys when the cyclepane is focused
+// (ModeCycle). The 18.9 invariant is that the cycle is process-
+// lifetime, so leaving this mode via esc (handled globally in
+// handleKey) does NOT cancel the cycle — it just shifts focus back
+// to the kanban. cyclepane-specific keys (j/k scroll, Enter open
+// in $EDITOR, e inline-read, x/cancel, s/skip, f/force-accept)
+// land here in P6.2/P6.3.
+func (m *Model) handleCycleMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// v1 stub: pass through. The global esc handler in handleKey
+	// already transitions ModeCycle → ModeNormal. cyclepane key
+	// handling is P6.2.
+	return m, nil
 }
 
 // handleCycleDoneMsg clears the cycle slot when cyc.Run returns.
