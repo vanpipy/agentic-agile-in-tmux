@@ -587,6 +587,20 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.showConfirm = false
 		m.titleInput.Blur()
 		return m, nil
+	case "x":
+		// 18.12: 'x' cancels the active cycle from any mode.
+		// Non-blocking send to the cap-1 cycleExt; if the buffer
+		// is full (a prior ext msg not yet consumed by the cycle
+		// tick), drop silently — the user can press 'x' again
+		// on the next tick. The cycle's Run goroutine reads
+		// cycleExt on each phase transition.
+		if m.activeCycle != nil {
+			select {
+			case m.cycleExt <- wiking.ExtMsg{Kind: wiking.ExtCancel}:
+			default:
+			}
+			return m, nil
+		}
 	case "?":
 		if m.mode == ModeNormal || m.mode == ModeHelp {
 			m.showHelp = !m.showHelp

@@ -203,7 +203,107 @@ func TestCycle_ViewShowsCycleChipWhenActive(t *testing.T) {
 	})
 }
 
-// firstNLines returns the first n lines of s, joined by '\n'. Used
+// TestCycle_XSendsExtCancel — pressing 'x' in any mode with an
+// active cycle sends wiking.ExtCancel via m.cycleExt (non-blocking).
+// Per 18.12, 'x' works in any active cycle, not just ModeCycle, so
+// the user can cancel from the kanban without focusing the
+// cyclepane first.
+//
+// Implementation lives in handleKey's x branch (not
+// handleNormalMode) so it's mode-agnostic. The cycle's Run
+// goroutine reads cycleExt on each tick; cancel causes it to
+// exit, the defer writes the error to cycleDone, and
+// handleCycleDoneMsg clears the slot.
+func TestCycle_XSendsExtCancel(t *testing.T) {
+	m := newModelForCycleTest(t)
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}})
+	if m.activeCycle == nil {
+		t.Fatal("precondition: cycle should have started")
+	}
+
+	// Drain any other Ext traffic (none expected on a fresh
+	// cycle, but be defensive — channels cap 1 so a stale value
+	// would block this test's send).
+	select {
+	case <-m.activeCycle.Ext:
+	default:
+	}
+
+	// Press 'x' from ModeCycle (the active mode after 'c').
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+
+	// Read the cancel from cycleExt. Timeout guards against the
+	// 'send fell into a closed channel' or 'send was dropped'
+	// regressions; 1s is generous for a buffered cap-1 channel.
+	select {
+	case msg := <-m.activeCycle.Ext:
+		if msg.Kind != wiking.ExtCancel {
+			t.Errorf("ExtMsg.Kind = %v, want ExtCancel", msg.Kind)
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatal("no ExtCancel received on cycleExt within 1s")
+	}
+
+	// Cleanup: the cancel should make the cycle exit; flush the
+	// goroutine via t.Cleanup with another ExtCancel in case the
+	// first was already consumed.
+	t.Cleanup(func() {
+		if m.activeCycle != nil {
+			select {
+			case m.cycleExt <- wiking.ExtMsg{Kind: wiking.ExtCancel}:
+			case <-time.After(100 * time.Millisecond):
+			}
+		}
+	})
+}
+
+// TestCycle_DoneCleansUpActiveCycle — handleCycleDoneMsg clears
+// the cycle slot when invoked. This is the cleanup half of the
+// cycle lifecycle: cyc.Run returns → defer writes to cycleDone →
+// pollCycleDoneAsync (P6.1c) emits cycleDoneMsg → Update dispatches
+// to handleCycleDoneMsg → slot cleared.
+//
+// This test invokes handleCycleDoneMsg directly (without going
+// through the polling path) so the cleanup logic is testable in
+// isolation. The polling integration lands in P6.1c.
+func TestCycle_DoneCleansUpActiveCycle(t *testing.T) {
+	m := newModelForCycleTest(t)
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}})
+	if m.activeCycle == nil {
+		t.Fatal("precondition: cycle should have started")
+	}
+	originalCycle := m.activeCycle
+	originalStem := m.cycleStem
+
+	// Simulate the cycle's defer firing: send an error to the
+	// underlying Done channel (m.cycleDone is the receive-only
+	// view per 18.11; the writable side is on the cycle itself).
+	// In production, the cycleDoneMsg delivery to Update comes
+	// from pollCycleDoneAsync, not from this direct send.
+	m.activeCycle.Done <- nil
+
+	// Dispatch the cleanup as Update would.
+	_, _ = m.Update(cycleDoneMsg{stem: originalStem, err: nil})
+
+	if m.activeCycle != nil {
+		t.Errorf("activeCycle = %v, want nil after done cleanup", m.activeCycle)
+	}
+	if m.activeCycle == originalCycle {
+		t.Error("activeCycle pointer was not cleared (should be nil, not the old value)")
+	}
+	if m.cycleEvents != nil {
+		t.Error("cycleEvents should be nil after done cleanup")
+	}
+	if m.cycleExt != nil {
+		t.Error("cycleExt should be nil after done cleanup")
+	}
+	if m.cycleDone != nil {
+		t.Error("cycleDone should be nil after done cleanup")
+	}
+	if m.cycleStem != "" {
+		t.Errorf("cycleStem = %q, want empty", m.cycleStem)
+	}
+}
 // for compact error messages so the test failure shows the header
 // row (where the chip lives) without dumping the full kanban view.
 func firstNLines(s string, n int) string {
