@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -23,6 +24,7 @@ import (
 	"github.com/pi/awp/internal/project"
 	"github.com/pi/awp/internal/terminal"
 	"github.com/pi/awp/internal/update"
+	"github.com/pi/awp/internal/wiking"
 
 )
 
@@ -46,6 +48,10 @@ const (
 	ModeEventView     Mode = "EVENTS"
 	ModeSessionPicker Mode = "PICKER"
 	ModeInterception  Mode = "INTERCEPT"
+	// 18.9 lifecycle: cycle lives at parent Model; ModeCycle is the
+	// focused-viewer state for the cyclepane (P6.2/6.3). The cycle
+	// keeps running when the user leaves this mode (esc).
+	ModeCycle Mode = "CYCLE"
 )
 
 const (
@@ -176,6 +182,20 @@ type Model struct {
 	pickerFilter   string
 	pickerIndex    int
 	pickerOffset   int
+
+	// 18.9 lifecycle: cycle lives at parent Model for the process
+	// lifetime. cyclepane (P6.2) is a viewer; this slot owns the
+	// state. Channels are wired in startCycle from the freshly-built
+	// *Cycle's Events/Ext/Done. cycleStem is the human-readable name
+	// shown in the header chip ("cycle: <stem>"); cycleStart is when
+	// the cycle was started, used by the cyclepane to render elapsed
+	// time. Both nil/zero when no cycle is active.
+	activeCycle *wiking.Cycle
+	cycleEvents <-chan wiking.Event
+	cycleExt    chan<- wiking.ExtMsg
+	cycleDone   <-chan error
+	cycleStem   string
+	cycleStart  time.Time
 }
 
 // NewModel constructs the kanban model. awp only supports pi,
@@ -512,6 +532,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.handlePaneTurnDone(fire)
 		}
 
+	case cycleDoneMsg:
+		// 18.9: cyc.Run has returned. Clear the cycle slot so a
+		// subsequent 'c' press can start a fresh cycle, and so the
+		// chip stops showing the completed stem. Idempotent; safe
+		// if no cycle was active (degenerate case).
+		m.handleCycleDoneMsg(msg)
+
 	case spinner.TickMsg:
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
@@ -653,6 +680,16 @@ func (m *Model) handleNormalMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.spawnAgent()
 	case "S":
 		return m.stopAgent()
+	case "c":
+		// 18.12 hotkey: start cycle on selected article. For v1
+		// the stem comes from the active ticket's title (if any)
+		// or "default" otherwise; the modal-based stem picker
+		// lands in P6.3.
+		stem := "default"
+		if t := m.selectedTicket(); t != nil {
+			stem = t.Title
+		}
+		return m, m.startCycle(stem)
 
 	case ":":
 		m.mode = ModeCommand
@@ -3367,4 +3404,122 @@ func renderInitPrompt(tmplStr string, ticket *board.Ticket, branchName, baseBran
 		return "", fmt.Errorf("execute template: %w", err)
 	}
 	return buf.String(), nil
+}
+
+// --- 18.9 cycle slot: parent Model owns the cycle, cyclepane is a viewer ---
+//
+// This file section implements the cycle hotkey + lifecycle hooks
+// for the parent Model. cyclepane (the focused viewer) lands in
+// P6.2/P6.3; the channels below are its read surface.
+
+// cycleDoneMsg is delivered to Update after cyc.Run returns. The
+// cycle's terminal error has already been published to m.cycleDone
+// before this message fires; cycleDoneMsg is purely the cleanup
+// signal — clear the slot so a subsequent 'c' press can start a new
+// cycle, and so the cyclepane stops rendering stale state.
+type cycleDoneMsg struct {
+	stem string
+	err  error
+}
+
+// startCycle creates a *wiking.Cycle for the given article stem,
+// stores it on the parent Model per 18.9, transitions to ModeCycle,
+// and returns a tea.Cmd that drives cyc.Run in a goroutine.
+//
+// WikiDir resolves to the selected project's repo path (falling back
+// to $HOME if no project is selected — keeps tests deterministic).
+// AWPHome is $HOME/.awp, which matches the headless cmd in
+// cmd/awp/cycle.go. RunID is "<stem>-<unix>" per the workspace
+// namespace convention.
+//
+// Returns nil (and emits a toast) if a cycle is already running, if
+// the wiki dir cannot be resolved, or if wiking.New fails.
+func (m *Model) startCycle(stem string) tea.Cmd {
+	if m.activeCycle != nil {
+		m.notify("cycle already running")
+		return nil
+	}
+	if stem == "" {
+		stem = "default"
+	}
+
+	wikiDir := ""
+	if m.selectedProject != nil {
+		wikiDir = m.selectedProject.RepoPath
+	}
+	if wikiDir == "" {
+		home, herr := os.UserHomeDir()
+		if herr != nil {
+			m.notify("cycle: cannot resolve wiki dir: " + herr.Error())
+			return nil
+		}
+		wikiDir = home
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		m.notify("cycle: cannot resolve awp home: " + err.Error())
+		return nil
+	}
+	awpHome := filepath.Join(home, ".awp")
+
+	runID := fmt.Sprintf("%s-%d", stem, time.Now().Unix())
+
+	cfg := m.config
+	runCfg := wiking.Config{
+		WikiDir:        wikiDir,
+		RunID:          runID,
+		AWPHome:        awpHome,
+		Threshold:      cfg.Cycle.Threshold,
+		IdleInterval:   cfg.Cycle.IdleInterval,
+		WikingInterval: cfg.Cycle.WikingInterval,
+		CodingInterval: cfg.Cycle.CodingInterval,
+		WikingTimeout:  cfg.Cycle.WikingTimeout,
+		CodingTimeout:  cfg.Cycle.CodingTimeout,
+		MaxNoProgress:  cfg.Cycle.MaxNoProgress,
+		Binary:         cfg.Pi.Command,
+		Wiking: wiking.RoleBinding{
+			Prompt: cfg.Wiking.Prompt,
+			CWD:    wikiDir,
+		},
+		Coding: wiking.RoleBinding{
+			Prompt: cfg.Coding.Prompt,
+			CWD:    wikiDir,
+		},
+	}
+
+	cyc, err := wiking.New(runCfg)
+	if err != nil {
+		m.notify("cycle: init failed: " + err.Error())
+		return nil
+	}
+
+	m.activeCycle = cyc
+	m.cycleEvents = cyc.Events
+	m.cycleExt = cyc.Ext
+	m.cycleDone = cyc.Done
+	m.cycleStem = stem
+	m.cycleStart = time.Now()
+	m.mode = ModeCycle
+
+	return func() tea.Msg {
+		defer observability.RecoverPanic("cycle.Run")
+		ctx := context.Background()
+		runErr := cyc.Run(ctx)
+		return cycleDoneMsg{stem: stem, err: runErr}
+	}
+}
+
+// handleCycleDoneMsg clears the cycle slot when cyc.Run returns.
+// Idempotent: subsequent calls (or calls when no cycle is active)
+// are no-ops. After this fires, the user can press 'c' again to
+// start a fresh cycle, and the header chip stops showing the
+// completed stem.
+func (m *Model) handleCycleDoneMsg(msg cycleDoneMsg) {
+	m.activeCycle = nil
+	m.cycleEvents = nil
+	m.cycleExt = nil
+	m.cycleDone = nil
+	m.cycleStem = ""
+	m.cycleStart = time.Time{}
 }
