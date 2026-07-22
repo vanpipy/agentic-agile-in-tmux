@@ -666,6 +666,45 @@ func captureEventChan(m *Model) <-chan tea.Msg {
 	return out
 }
 
+// TestCycle_CHotkeyWithoutProjectIsRejected — pressing 'c' when
+// no project is selected must NOT start a cycle. The TUI
+// contract is: pick a project, run a cycle on it. Falling back
+// to $HOME as WikiDir would write article-{N}.md directly into
+// the user's home directory.
+//
+// This test uses a fresh Model with no projects (vs the typical
+// newModelForCycleTest which adds one). After pressing 'c',
+// m.activeCycle must remain nil and the toast must mention the
+// missing-project error.
+func TestCycle_CHotkeyWithoutProjectIsRejected(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("AWP_CONFIG_DIR", tmpDir)
+
+	cfg := config.DefaultConfig()
+	// Empty registry — no projects.
+	registry := &project.ProjectRegistry{
+		Projects: map[string]*project.Project{},
+	}
+	gts, err := project.LoadGlobalTicketStore(registry)
+	if err != nil {
+		t.Fatalf("LoadGlobalTicketStore: %v", err)
+	}
+
+	m := NewModel(cfg, gts, registry, "", nil)
+	if m.selectedProject != nil {
+		t.Fatalf("precondition: selectedProject = %v, want nil", m.selectedProject)
+	}
+
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}})
+
+	if m.activeCycle != nil {
+		t.Error("activeCycle should be nil when no project is selected")
+	}
+	if !strings.Contains(strings.ToLower(m.notification), "project") {
+		t.Errorf("toast should mention 'project' as the missing prerequisite; got %q", m.notification)
+	}
+}
+
 // TestCycle_PollCycleDoneAsyncRaceFree — concurrency regression
 // for the local-capture fix in pollCycleDoneAsync /
 // pollCycleEventsAsync.

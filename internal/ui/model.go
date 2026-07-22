@@ -3550,18 +3550,17 @@ func (m *Model) startCycle(stem string) tea.Cmd {
 		stem = "default"
 	}
 
-	wikiDir := ""
-	if m.selectedProject != nil {
-		wikiDir = m.selectedProject.RepoPath
+	// WikiDir must be a project the user explicitly added. Falling
+	// back to $HOME would write article-{N}.md and article.md
+	// directly into the user's home directory, polluting it with
+	// cycle artifacts. The TUI contract is: pick a project, run a
+	// cycle on it. (The headless `awp cycle` cmd has the same
+	// fallback for CLI ergonomics — that's intentional there.)
+	if m.selectedProject == nil {
+		m.notify("select a project before starting a cycle")
+		return nil
 	}
-	if wikiDir == "" {
-		home, herr := os.UserHomeDir()
-		if herr != nil {
-			m.notify("cycle: cannot resolve wiki dir: " + herr.Error())
-			return nil
-		}
-		wikiDir = home
-	}
+	wikiDir := m.selectedProject.RepoPath
 
 	home, err := os.UserHomeDir()
 	if err != nil {
