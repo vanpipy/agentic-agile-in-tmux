@@ -17,6 +17,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -709,4 +710,56 @@ func writeFakeCycleBin(t *testing.T, name, body string) string {
 		t.Fatalf("write fake bin: %v", err)
 	}
 	return path
+}
+
+// TestWikingSpawnArgs_OmitsRoleWhenEmpty — production with real
+// pi prefers no --role flag (real pi may not accept unknown flags).
+// Empty Role in RoleBinding → spawn argv omits --role entirely.
+//
+// Per wiking-and-coding.md §7 "External agents vs framework-owned
+// agents", the cycle is agent-agnostic — today pi consumes --role,
+// tomorrow codex/claude code might not. The Role field is the
+// explicit knob; default empty = no flag = production-safe.
+func TestWikingSpawnArgs_OmitsRoleWhenEmpty(t *testing.T) {
+	c := &Cycle{cfg: Config{Wiking: RoleBinding{Prompt: "test-prompt"}}}
+	got := c.wikingSpawnArgs()
+	for _, a := range got {
+		if a == "--role" {
+			t.Fatalf("wikingSpawnArgs should not emit --role when Role is empty; got %v", got)
+		}
+	}
+	// Prompt still present.
+	hasPrompt := false
+	for i, a := range got {
+		if a == "--prompt" && i+1 < len(got) && got[i+1] == "test-prompt" {
+			hasPrompt = true
+		}
+	}
+	if !hasPrompt {
+		t.Errorf("wikingSpawnArgs missing --prompt test-prompt; got %v", got)
+	}
+}
+
+// TestCodingSpawnArgs_OmitsRoleWhenEmpty — same shape for coding.
+func TestCodingSpawnArgs_OmitsRoleWhenEmpty(t *testing.T) {
+	c := &Cycle{cfg: Config{Coding: RoleBinding{Prompt: "test-prompt"}}}
+	got := c.codingSpawnArgs()
+	for _, a := range got {
+		if a == "--role" {
+			t.Fatalf("codingSpawnArgs should not emit --role when Role is empty; got %v", got)
+		}
+	}
+}
+
+// TestWikingSpawnArgs_IncludesRoleWhenSet — when Role is set,
+// the cycle emits --role <Role>. Tests that dispatch on argv
+// (e.g., test/wiking/cycle_integration_test.go's fake-pi) rely on
+// this. Without it, fakes can't tell wiking from coding.
+func TestWikingSpawnArgs_IncludesRoleWhenSet(t *testing.T) {
+	c := &Cycle{cfg: Config{Wiking: RoleBinding{Role: "wiking", Prompt: "p"}}}
+	got := c.wikingSpawnArgs()
+	want := []string{"--mode", "rpc", "--role", "wiking", "--prompt", "p"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("wikingSpawnArgs = %v, want %v", got, want)
+	}
 }

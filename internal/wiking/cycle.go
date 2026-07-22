@@ -72,9 +72,28 @@ var (
 
 // RoleBinding is the per-role configuration.
 type RoleBinding struct {
-	Prompt       string
-	CWD          string
+	// Prompt is the literal text passed to the agent (wiking writes
+	// plan, coding writes review, etc). Configurable per role.
+	Prompt string
+	// CWD is the working directory the agent runs in. Typically the
+	// wiki repo path so reads/writes resolve naturally.
+	CWD string
+	// AllowedTools is an optional tool allowlist forwarded to the
+	// agent (currently informational; cycle.go doesn't yet pass it
+	// through to argv).
 	AllowedTools []string
+	// Role is the value of the --role CLI flag passed to pi. When
+	// empty, the cycle omits --role from the spawn argv — the
+	// recommended setting for production with real pi (which may
+	// not accept unknown flags). Tests set this explicitly so
+	// fakes can dispatch on argv.
+	//
+	// Per wiking-and-coding.md §7 "External agents vs framework-
+	// owned agents", wiking and coding are slots any external
+	// agent can fill. The Role field is the explicit knob; today
+	// only pi consumes it, but the cycle driver doesn't care
+	// which agent you assign.
+	Role string
 }
 
 // Config is the cycle's input. See §18.10 for defaults.
@@ -577,13 +596,19 @@ func (c *Cycle) spawnCoding() {
 //
 // Pinned format (v1):
 //   --mode rpc        consistent with awp's other pi usage
-//   --role wiking     role discriminator (test + audit friendly)
-//   --prompt <text>   role-bound prompt
+//   --role <Role>     only when cfg.Wiking.Role is non-empty;
+//                     omit in production to avoid passing unknown
+//                     flags to real pi (which may not accept them)
+//   --prompt <text>  role-bound prompt
 //
-// Production will revisit once pi's exact one-shot CLI surface
-// is finalized. For testing, --role lets fakes dispatch on argv.
+// The Role flag is opt-in because tests need it (fakes dispatch on
+// argv) but production with real pi prefers to avoid unknown flags.
+// See RoleBinding.Role doc for the rationale.
 func (c *Cycle) wikingSpawnArgs() []string {
-	out := []string{"--mode", "rpc", "--role", "wiking"}
+	out := []string{"--mode", "rpc"}
+	if c.cfg.Wiking.Role != "" {
+		out = append(out, "--role", c.cfg.Wiking.Role)
+	}
 	if c.cfg.Wiking.Prompt != "" {
 		out = append(out, "--prompt", c.cfg.Wiking.Prompt)
 	}
@@ -592,7 +617,10 @@ func (c *Cycle) wikingSpawnArgs() []string {
 
 // codingSpawnArgs builds the argv for coding. See wikingSpawnArgs.
 func (c *Cycle) codingSpawnArgs() []string {
-	out := []string{"--mode", "rpc", "--role", "coding"}
+	out := []string{"--mode", "rpc"}
+	if c.cfg.Coding.Role != "" {
+		out = append(out, "--role", c.cfg.Coding.Role)
+	}
 	if c.cfg.Coding.Prompt != "" {
 		out = append(out, "--prompt", c.cfg.Coding.Prompt)
 	}

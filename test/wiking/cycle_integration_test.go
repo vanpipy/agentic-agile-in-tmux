@@ -110,8 +110,8 @@ func TestCycle_OneFullRound(t *testing.T) {
 		WikingTimeout:  10 * time.Second,
 		CodingTimeout:  10 * time.Second,
 		MaxNoProgress:  50,
-		Wiking:         wiking.RoleBinding{Prompt: "test-wiking", CWD: wiki},
-		Coding:         wiking.RoleBinding{Prompt: "test-coding", CWD: wiki},
+		Wiking:         wiking.RoleBinding{Prompt: "test-wiking", CWD: wiki, Role: "wiking"},
+		Coding:         wiking.RoleBinding{Prompt: "test-coding", CWD: wiki, Role: "coding"},
 		Binary:         binPath,
 	}
 
