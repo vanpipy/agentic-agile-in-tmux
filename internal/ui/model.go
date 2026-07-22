@@ -3570,7 +3570,7 @@ func (m *Model) startCycle(stem string) tea.Cmd {
 	}
 	awpHome := filepath.Join(home, ".awp")
 
-	runID := fmt.Sprintf("%s-%d", stem, time.Now().Unix())
+	runID := fmt.Sprintf("%s-%d", wiking.SanitizeRunID(stem), time.Now().Unix())
 
 	cfg := m.config
 	runCfg := wiking.Config{

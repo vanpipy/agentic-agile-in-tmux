@@ -276,3 +276,50 @@ func TestParseArticleN(t *testing.T) {
 		})
 	}
 }
+
+// TestSanitizeRunID — RunID is the path component under
+// ~/.awp/cycle/<RunID>/, so any path-unsafe character in the
+// input stem is a directory-escape vector. SanitizeRunID
+// replaces '/', '\\', and other filesystem-special characters
+// with '_'. Empty input returns "default" to match the UI's
+// blank-stem fallback.
+//
+// Without sanitization: a stem like "../../../tmp/foo" would
+// cause MkdirAll to create directories outside the cycle/
+// subdir. Defense in depth — the user's $HOME is theirs, but
+// ticket titles (the UI's typical stem source) can come from
+// external sources, so the path traversal shouldn't exist in
+// the first place.
+func TestSanitizeRunID(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"empty_returns_default", "", "default"},
+		{"plain_unchanged", "my-article", "my-article"},
+		{"slash_replaced", "foo/bar", "foo_bar"},
+		{"backslash_replaced", "foo\\bar", "foo_bar"},
+		{"colon_replaced", "C:\\path", "C__path"},
+		{"dotdot_neutralised", "../../../tmp/foo", ".._.._.._tmp_foo"},
+		{"multiple_slashes", "a/b/c/d", "a_b_c_d"},
+		{"semicolon_passes_through", "foo;rm -rf", "foo;rm -rf"},
+		// Note: ';' is a shell metachar but legal in filenames on
+		// every common filesystem. The sanitizer targets path
+		// traversal (which needs '/' or '\'), not shell injection
+		// (which would need a separate shlex pass). runID is a
+		// path component, not a shell arg.
+		{"quoted_replaced", `"foo"`, "_foo_"},
+		{"glob_neutralised", "foo*?", "foo__"},
+		{"null_byte_replaced", "foo\x00bar", "foo_bar"},
+		{"unicode_passthrough", "café-über", "café-über"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := SanitizeRunID(tc.in)
+			if got != tc.want {
+				t.Errorf("SanitizeRunID(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}

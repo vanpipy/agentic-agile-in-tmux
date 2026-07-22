@@ -58,6 +58,39 @@ func NewWorkspace(cfg WorkspaceConfig) (*Workspace, error) {
 	return &Workspace{wikiDir: cfg.WikiDir, runID: cfg.RunID, awpHome: cfg.AWPHome}, nil
 }
 
+// SanitizeRunID replaces filesystem-unsafe characters in a stem
+// with '_'. RunID becomes part of a filesystem path
+// (~/.awp/cycle/<RunID>/events.jsonl); without sanitization, a
+// stem containing '/', '\\', or other special characters could
+// create directories outside the intended scope.
+//
+// Defense in depth: the user's $HOME is theirs, and a CLI user
+// attacking their own home dir is self-inflicted. But ticket
+// titles (the typical UI source of stem) can come from external
+// sources (a project the user added), so a stray '/' in a
+// title shouldn't silently become a path traversal.
+//
+// Empty input returns "default" to match the UI's fallback
+// for blank stems.
+//
+// This is exported because both the UI (model.go:3573) and the
+// headless cmd (cmd/awp/cycle.go:101) construct runID from
+// user-supplied strings. Centralizing the sanitizer here
+// keeps the rule in one place.
+func SanitizeRunID(stem string) string {
+	if stem == "" {
+		return "default"
+	}
+	out := []rune(stem)
+	for i, r := range out {
+		switch r {
+		case '/', '\\', ':', '*', '?', '"', '<', '>', '|', 0:
+			out[i] = '_'
+		}
+	}
+	return string(out)
+}
+
 // WikiDir returns the configured wiki directory.
 func (w *Workspace) WikiDir() string { return w.wikiDir }
 

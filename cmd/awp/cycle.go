@@ -97,8 +97,11 @@ func runCycle(cmd *cobra.Command, args []string) error {
 	}
 	awpHome := filepath.Join(home, ".awp")
 
-	// Run ID: deterministic + unique per invocation.
-	runID := fmt.Sprintf("%s-%d", article, time.Now().Unix())
+	// Run ID: deterministic + unique per invocation. Sanitize
+	// the article stem so a '/' or other unsafe char in the
+	// user's input can't escape the cycle/ subdirectory (see
+	// wiking.SanitizeRunID for the rationale).
+	runID := fmt.Sprintf("%s-%d", wiking.SanitizeRunID(article), time.Now().Unix())
 
 	// Threshold: --threshold flag overrides config; config default applies otherwise.
 	threshold := cycleThreshold
