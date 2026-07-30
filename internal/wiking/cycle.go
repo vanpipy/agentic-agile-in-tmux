@@ -553,6 +553,13 @@ func (c *Cycle) spawnWiking() {
 		c.appendEvent(Event{Type: "error", Kind: "wiking_start_failed", Details: details})
 		return
 	}
+	// Fire-and-forget reap: pi (in --print mode) exits on its own when
+	// the agent finishes. Without this Wait, the subprocess becomes a
+	// zombie until killActiveSpawns runs on cancel/timeout. Across a
+	// multi-round cycle (e.g., 3 wiking + 3 coding rounds), this leaks
+	// up to 6 zombies. The error is intentionally swallowed: the marker
+	// file is the witness, not pi's exit code.
+	go func() { _ = cmd.Wait() }()
 	c.mu.Lock()
 	c.wikingCmd = cmd
 	c.mu.Unlock()
@@ -583,6 +590,8 @@ func (c *Cycle) spawnCoding() {
 		c.appendEvent(Event{Type: "error", Kind: "coding_start_failed", Details: details})
 		return
 	}
+	// Fire-and-forget reap — see spawnWiking for rationale.
+	go func() { _ = cmd.Wait() }()
 	c.mu.Lock()
 	c.codingCmd = cmd
 	c.mu.Unlock()
@@ -594,35 +603,55 @@ func (c *Cycle) spawnCoding() {
 
 // wikingSpawnArgs builds the argv for wiking.
 //
-// Pinned format (v1):
-//   --mode rpc        consistent with awp's other pi usage
-//   --role <Role>     only when cfg.Wiking.Role is non-empty;
-//                     omit in production to avoid passing unknown
-//                     flags to real pi (which may not accept them)
-//   --prompt <text>  role-bound prompt
+// Pinned format (verified against pi 0.81+ source at
+// /home/leroy/Project/pi-mono/packages/coding-agent/src/cli/args.ts:78-157):
 //
-// The Role flag is opt-in because tests need it (fakes dispatch on
-// argv) but production with real pi prefers to avoid unknown flags.
-// See RoleBinding.Role doc for the rationale.
+//   --print              one-shot non-interactive: pi runs the prompt
+//                        and exits. Verified against args.ts:140 (the
+//                        `--print`/`-p` flag) and print-mode.ts (the
+//                        one-shot handler).
+//   --role <Role>        OPTIONAL — only when cfg.Wiking.Role is
+//                        non-empty. Tests with fake-pi set Role to
+//                        dispatch on argv; production leaves it empty
+//                        because real pi does not define a `--role`
+//                        flag (none found in args.ts). The Role
+//                        config field is documented in wiking-and-coding.md
+//                        §7 as the future-portable knob for assigning
+//                        any external agent to the postman slot.
+//   --  <prompt>          positional prompt, separated by `--` so that
+//                        a prompt beginning with `--` is unambiguously
+//                        positional. Verified: pi's args.ts has NO
+//                        `--prompt` flag — using `--prompt` would
+//                        silently consume the prompt text as the value
+//                        of an unknown flag and the agent would never
+//                        see it.
+//
+// Critical: NOT --mode rpc. pi's rpc mode reads JSON-RPC messages
+// from stdin; the cycle is fire-and-forget and never writes stdin,
+// so pi would block until the per-phase timeout fires (30 min default).
+// Before this fix, the cycle appeared dead in production: spawn, no
+// marker, no progress, eventual ErrPhaseTimeout. The integration test
+// passed because its fake-pi shell script ignores all flags except
+// `--role`, masking the broken contract.
 func (c *Cycle) wikingSpawnArgs() []string {
-	out := []string{"--mode", "rpc"}
+	out := []string{"--print"}
 	if c.cfg.Wiking.Role != "" {
 		out = append(out, "--role", c.cfg.Wiking.Role)
 	}
 	if c.cfg.Wiking.Prompt != "" {
-		out = append(out, "--prompt", c.cfg.Wiking.Prompt)
+		out = append(out, "--", c.cfg.Wiking.Prompt)
 	}
 	return out
 }
 
 // codingSpawnArgs builds the argv for coding. See wikingSpawnArgs.
 func (c *Cycle) codingSpawnArgs() []string {
-	out := []string{"--mode", "rpc"}
+	out := []string{"--print"}
 	if c.cfg.Coding.Role != "" {
 		out = append(out, "--role", c.cfg.Coding.Role)
 	}
 	if c.cfg.Coding.Prompt != "" {
-		out = append(out, "--prompt", c.cfg.Coding.Prompt)
+		out = append(out, "--", c.cfg.Coding.Prompt)
 	}
 	return out
 }

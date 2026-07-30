@@ -720,6 +720,14 @@ func writeFakeCycleBin(t *testing.T, name, body string) string {
 // agents", the cycle is agent-agnostic — today pi consumes --role,
 // tomorrow codex/claude code might not. The Role field is the
 // explicit knob; default empty = no flag = production-safe.
+//
+// Spawn contract (verified against pi-mono
+// packages/coding-agent/src/cli/args.ts:78-157):
+//   --print   one-shot non-interactive (NOT --mode rpc, which requires
+//            JSON-RPC on stdin — the cycle is fire-and-forget).
+//   --role <Role>  only when Role is non-empty.
+//   -- <prompt>     positional prompt, separated by `--` so the prompt
+//                  text is not parsed as a flag even if it starts with --.
 func TestWikingSpawnArgs_OmitsRoleWhenEmpty(t *testing.T) {
 	c := &Cycle{cfg: Config{Wiking: RoleBinding{Prompt: "test-prompt"}}}
 	got := c.wikingSpawnArgs()
@@ -728,15 +736,39 @@ func TestWikingSpawnArgs_OmitsRoleWhenEmpty(t *testing.T) {
 			t.Fatalf("wikingSpawnArgs should not emit --role when Role is empty; got %v", got)
 		}
 	}
-	// Prompt still present.
-	hasPrompt := false
-	for i, a := range got {
-		if a == "--prompt" && i+1 < len(got) && got[i+1] == "test-prompt" {
-			hasPrompt = true
+	// Must NOT use --mode rpc (pi then expects JSON-RPC on stdin, which
+	// the cycle never writes — agent blocks until phase timeout).
+	for _, a := range got {
+		if a == "--mode" {
+			t.Fatalf("wikingSpawnArgs should not emit --mode; pi's --mode requires stdin RPC; got %v", got)
 		}
 	}
+	// Must NOT emit --prompt (no such flag in pi); prompt is positional.
+	for _, a := range got {
+		if a == "--prompt" {
+			t.Fatalf("wikingSpawnArgs should not emit --prompt (pi has no such flag); got %v", got)
+		}
+	}
+	// Must use --print for non-interactive one-shot execution.
+	if len(got) == 0 || got[0] != "--print" {
+		t.Errorf("wikingSpawnArgs must start with --print; got %v", got)
+	}
+	// Prompt must appear AFTER a `--` separator (positional).
+	hasDash := false
+	hasPrompt := false
+	for i, a := range got {
+		if a == "--" {
+			hasDash = true
+			if i+1 < len(got) && got[i+1] == "test-prompt" {
+				hasPrompt = true
+			}
+		}
+	}
+	if !hasDash {
+		t.Errorf("wikingSpawnArgs must use `--` separator before prompt; got %v", got)
+	}
 	if !hasPrompt {
-		t.Errorf("wikingSpawnArgs missing --prompt test-prompt; got %v", got)
+		t.Errorf("wikingSpawnArgs missing `test-prompt` after `--`; got %v", got)
 	}
 }
 
@@ -749,17 +781,59 @@ func TestCodingSpawnArgs_OmitsRoleWhenEmpty(t *testing.T) {
 			t.Fatalf("codingSpawnArgs should not emit --role when Role is empty; got %v", got)
 		}
 	}
+	for _, a := range got {
+		if a == "--mode" {
+			t.Fatalf("codingSpawnArgs should not emit --mode; got %v", got)
+		}
+	}
+	for _, a := range got {
+		if a == "--prompt" {
+			t.Fatalf("codingSpawnArgs should not emit --prompt; got %v", got)
+		}
+	}
+	if len(got) == 0 || got[0] != "--print" {
+		t.Errorf("codingSpawnArgs must start with --print; got %v", got)
+	}
 }
 
 // TestWikingSpawnArgs_IncludesRoleWhenSet — when Role is set,
 // the cycle emits --role <Role>. Tests that dispatch on argv
 // (e.g., test/wiking/cycle_integration_test.go's fake-pi) rely on
 // this. Without it, fakes can't tell wiking from coding.
+//
+// Spawn contract: --print --role <Role> -- <prompt>
 func TestWikingSpawnArgs_IncludesRoleWhenSet(t *testing.T) {
 	c := &Cycle{cfg: Config{Wiking: RoleBinding{Role: "wiking", Prompt: "p"}}}
 	got := c.wikingSpawnArgs()
-	want := []string{"--mode", "rpc", "--role", "wiking", "--prompt", "p"}
+	want := []string{"--print", "--role", "wiking", "--", "p"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("wikingSpawnArgs = %v, want %v", got, want)
+	}
+}
+
+// TestWikingSpawnArgs_NoPromptSkipsDashSeparator — when Prompt is
+// empty, do NOT emit a trailing `--` (correctness: a bare `--` is
+// acceptable to most CLIs but documenting the edge case keeps future
+// edits honest; some posix parsers refuse a trailing `--` with no
+// following positional).
+func TestWikingSpawnArgs_NoPromptSkipsDashSeparator(t *testing.T) {
+	c := &Cycle{cfg: Config{Wiking: RoleBinding{Role: "wiking"}}} // no Prompt
+	got := c.wikingSpawnArgs()
+	want := []string{"--print", "--role", "wiking"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("wikingSpawnArgs (no prompt) = %v, want %v", got, want)
+	}
+}
+
+// TestWikingSpawnArgs_EmptyPromptEmptyRole — minimum production case:
+// no Prompt, no Role. Just `--print`. This is what real pi is invoked
+// with in production today (the prompt-less launch is rare; this pins
+// the shape so a future regression that always emits `--` gets caught).
+func TestWikingSpawnArgs_EmptyPromptEmptyRole(t *testing.T) {
+	c := &Cycle{cfg: Config{}} // no RoleBinding fields set
+	got := c.wikingSpawnArgs()
+	want := []string{"--print"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("wikingSpawnArgs (empty) = %v, want %v", got, want)
 	}
 }
